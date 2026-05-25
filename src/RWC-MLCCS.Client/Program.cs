@@ -98,6 +98,7 @@ internal sealed class InstallerWizardForm : Form
         _content.Controls.Clear();
         _content.Controls.Add(_pages[index]());
         _backButton.Enabled = index > 0 && index < 4;
+        _cancelButton.Enabled = true;
         _cancelButton.Text = index == 4 ? "关闭" : "取消";
 
         _titleLabel.Text = index switch
@@ -106,7 +107,7 @@ internal sealed class InstallerWizardForm : Form
             1 => "用户政策许可",
             2 => "配置来源",
             3 => "安装与运行服务",
-            _ => "安装完成"
+            _ => "等待服务端"
         };
 
         UpdateNextButton();
@@ -141,7 +142,7 @@ internal sealed class InstallerWizardForm : Form
         _nextButton.Text = _pageIndex switch
         {
             3 => "安装",
-            4 => "完成",
+            4 => "关闭",
             _ => "下一步"
         };
     }
@@ -236,7 +237,7 @@ internal sealed class InstallerWizardForm : Form
     {
         var panel = CreatePagePanel();
         panel.Controls.Add(CreateBodyLabel(
-            "RWC-MLCCS 已完成初始化并开始运行。\r\n\r\n保持此窗口打开时，后台连接会持续生效。关闭本程序将断开连接并停止本工具创建的执行进程。"));
+            "RWC-MLCCS 已完成初始化，正在等待服务端连接。\r\n\r\n保持此窗口打开时，后台连接会持续生效。关闭本程序将断开连接并停止本工具创建的执行进程。"));
         return panel;
     }
 
@@ -258,9 +259,9 @@ internal sealed class InstallerWizardForm : Form
             _runCts = new CancellationTokenSource();
             _runTask = Task.Run(() => ReverseClient.RunReconnectLoopAsync(config, _logger, _runCts.Token));
 
-            SetProgress(100, "安装完成，后台连接已启动。");
+            SetProgress(100, "安装完成，正在等待服务端连接...");
             await Task.Delay(500);
-            ShowPage(3);
+            ShowPage(4);
         }
         catch (Exception ex)
         {

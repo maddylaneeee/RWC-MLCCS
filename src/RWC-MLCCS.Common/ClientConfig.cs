@@ -5,7 +5,7 @@ namespace RWC_MLCCS.Common;
 
 public sealed class ClientConfig
 {
-    public string ServerUrl { get; set; } = "wss://your-server.example:7580/link";
+    public string ServerUrl { get; set; } = BuildDefaults.ServerUrl;
 
     public string SharedSecret { get; set; } = "change-this-shared-secret";
 
@@ -33,7 +33,7 @@ public sealed class ClientConfig
         var loaded = JsonConfig.Read<ClientConfig>(path);
         if (string.IsNullOrWhiteSpace(loaded.ServerUrl))
         {
-            loaded.ServerUrl = "wss://your-server.example:7580/link";
+            loaded.ServerUrl = BuildDefaults.ServerUrl;
         }
 
         if (string.IsNullOrWhiteSpace(loaded.SharedSecret))

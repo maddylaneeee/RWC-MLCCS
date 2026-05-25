@@ -6,6 +6,19 @@
     <RootNamespace>RWC_MLCCS.Common</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <RwcDefaultClientConfigUrl Condition="'$(RwcDefaultClientConfigUrl)' == ''">https://your-server.example/rwc-mlccs/config.json</RwcDefaultClientConfigUrl>
+    <RwcDefaultServerUrl Condition="'$(RwcDefaultServerUrl)' == ''">wss://your-server.example:7580/link</RwcDefaultServerUrl>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>RwcDefaultClientConfigUrl</_Parameter1>
+      <_Parameter2>$(RwcDefaultClientConfigUrl)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>RwcDefaultServerUrl</_Parameter1>
+      <_Parameter2>$(RwcDefaultServerUrl)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
 
 </Project>
