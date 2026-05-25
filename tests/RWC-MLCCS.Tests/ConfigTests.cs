@@ -13,7 +13,7 @@ public sealed class ConfigTests
         var config = ClientConfig.LoadOrCreate(path);
 
         Assert.True(File.Exists(path));
-        Assert.Equal("wss://lixinchen.ca:7580/link", config.ServerUrl);
+        Assert.Equal("wss://your-server.example:7580/link", config.ServerUrl);
         Assert.False(config.AllowInvalidServerCertificate);
         Assert.True(config.AllowLocalPowerShellFallback);
     }

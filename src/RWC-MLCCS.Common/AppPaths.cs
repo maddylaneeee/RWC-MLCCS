@@ -4,7 +4,7 @@ public static class AppPaths
 {
     public const string ProductName = "RWC-MLCCS";
 
-    public const string DefaultClientConfigUrl = "https://lixinchen.ca/rwc-mlccs/config.json";
+    public const string DefaultClientConfigUrl = "https://your-server.example/rwc-mlccs/config.json";
 
     public static string BaseDirectory => AppContext.BaseDirectory;
 

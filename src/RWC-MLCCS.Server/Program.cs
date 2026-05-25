@@ -333,7 +333,7 @@ internal static class CertificateFactory
         Directory.CreateDirectory(Path.GetDirectoryName(certPath) ?? AppPaths.BaseDirectory);
         using var rsa = RSA.Create(2048);
         var request = new CertificateRequest(
-            "CN=lixinchen.ca",
+            "CN=RWC-MLCCS Development Certificate",
             rsa,
             HashAlgorithmName.SHA256,
             RSASignaturePadding.Pkcs1);
@@ -342,7 +342,6 @@ internal static class CertificateFactory
         request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
 
         var sanBuilder = new SubjectAlternativeNameBuilder();
-        sanBuilder.AddDnsName("lixinchen.ca");
         sanBuilder.AddDnsName("localhost");
         sanBuilder.AddIpAddress(IPAddress.Loopback);
         sanBuilder.AddIpAddress(IPAddress.Parse("127.0.0.1"));

@@ -29,6 +29,7 @@ internal sealed class InstallerWizardForm : Form
     private CheckBox? _acceptCheckBox;
     private ProgressBar? _progressBar;
     private Label? _statusLabel;
+    private TextBox? _configUrlTextBox;
     private CancellationTokenSource? _runCts;
     private Task? _runTask;
 
@@ -64,6 +65,7 @@ internal sealed class InstallerWizardForm : Form
         {
             CreateWelcomePage,
             CreatePolicyPage,
+            CreateConfigPage,
             CreateInstallPage,
             CreateFinishPage
         };
@@ -95,14 +97,15 @@ internal sealed class InstallerWizardForm : Form
         _pageIndex = index;
         _content.Controls.Clear();
         _content.Controls.Add(_pages[index]());
-        _backButton.Enabled = index > 0 && index < 3;
-        _cancelButton.Text = index == 3 ? "关闭" : "取消";
+        _backButton.Enabled = index > 0 && index < 4;
+        _cancelButton.Text = index == 4 ? "关闭" : "取消";
 
         _titleLabel.Text = index switch
         {
             0 => "欢迎使用 RWC-MLCCS",
             1 => "用户政策许可",
-            2 => "安装与运行服务",
+            2 => "配置来源",
+            3 => "安装与运行服务",
             _ => "安装完成"
         };
 
@@ -111,13 +114,13 @@ internal sealed class InstallerWizardForm : Form
 
     private async Task NextAsync()
     {
-        if (_pageIndex == 2)
+        if (_pageIndex == 3)
         {
             await InstallAndRunAsync();
             return;
         }
 
-        if (_pageIndex == 3)
+        if (_pageIndex == 4)
         {
             await CloseWithCleanupAsync();
             return;
@@ -137,8 +140,8 @@ internal sealed class InstallerWizardForm : Form
         _nextButton.Enabled = _pageIndex != 1 || (_acceptCheckBox?.Checked ?? false) || File.Exists(AppPaths.PolicyAcceptedPath);
         _nextButton.Text = _pageIndex switch
         {
-            2 => "安装",
-            3 => "完成",
+            3 => "安装",
+            4 => "完成",
             _ => "下一步"
         };
     }
@@ -148,6 +151,38 @@ internal sealed class InstallerWizardForm : Form
         var panel = CreatePagePanel();
         panel.Controls.Add(CreateBodyLabel(
             "此向导将初始化 RWC-MLCCS 客户端，并在完成后连接到 MLCCS 服务端。\r\n\r\n请关闭不必要的管理工具，然后点击“下一步”继续。"));
+        return panel;
+    }
+
+    private Control CreateConfigPage()
+    {
+        var panel = CreatePagePanel();
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 4
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var intro = CreateBodyLabel("请输入客户端初始化配置的 HTTPS 地址。安装时程序会下载该配置，并保存到本机 ProgramData。");
+        var label = new Label { Text = "配置 URL", Dock = DockStyle.Fill };
+        _configUrlTextBox = new TextBox
+        {
+            Text = ResolveInitialConfigSourceUrl(),
+            Dock = DockStyle.Fill
+        };
+        _configUrlTextBox.TextChanged += (_, _) => UpdateNextButton();
+        var hint = CreateBodyLabel("示例：https://your-server.example/rwc-mlccs/config.json");
+
+        layout.Controls.Add(intro, 0, 0);
+        layout.Controls.Add(label, 0, 1);
+        layout.Controls.Add(_configUrlTextBox, 0, 2);
+        layout.Controls.Add(hint, 0, 3);
+        panel.Controls.Add(layout);
         return panel;
     }
 
@@ -216,7 +251,8 @@ internal sealed class InstallerWizardForm : Form
             File.WriteAllText(AppPaths.PolicyAcceptedPath, $"acceptedAt={DateTimeOffset.Now:O}{Environment.NewLine}");
 
             SetProgress(35, "正在下载初始化配置...");
-            var config = await InstallerBootstrapper.EnsureClientConfigAsync(_logger, CancellationToken.None);
+            var configSourceUrl = _configUrlTextBox?.Text.Trim() ?? "";
+            var config = await InstallerBootstrapper.EnsureClientConfigAsync(configSourceUrl, _logger, CancellationToken.None);
 
             SetProgress(70, "正在启动后台连接...");
             _runCts = new CancellationTokenSource();
@@ -299,29 +335,51 @@ internal sealed class InstallerWizardForm : Form
             AutoSize = false
         };
     }
+
+    private static string ResolveInitialConfigSourceUrl()
+    {
+        if (!File.Exists(AppPaths.DefaultClientConfigPath))
+        {
+            return AppPaths.DefaultClientConfigUrl;
+        }
+
+        try
+        {
+            var existing = ClientConfig.LoadOrCreate(AppPaths.DefaultClientConfigPath);
+            return string.IsNullOrWhiteSpace(existing.ConfigSourceUrl)
+                ? AppPaths.DefaultClientConfigUrl
+                : existing.ConfigSourceUrl;
+        }
+        catch
+        {
+            return AppPaths.DefaultClientConfigUrl;
+        }
+    }
 }
 
 internal static class InstallerBootstrapper
 {
-    public static async Task<ClientConfig> EnsureClientConfigAsync(FileLogger logger, CancellationToken cancellationToken)
+    public static async Task<ClientConfig> EnsureClientConfigAsync(string configSourceUrl, FileLogger logger, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(AppPaths.ClientDataDirectory);
 
-        var sourceUrl = AppPaths.DefaultClientConfigUrl;
-        if (File.Exists(AppPaths.DefaultClientConfigPath))
+        if (string.IsNullOrWhiteSpace(configSourceUrl) ||
+            !Uri.TryCreate(configSourceUrl, UriKind.Absolute, out var sourceUri) ||
+            sourceUri.Scheme != Uri.UriSchemeHttps)
         {
-            var existing = ClientConfig.LoadOrCreate(AppPaths.DefaultClientConfigPath);
-            sourceUrl = string.IsNullOrWhiteSpace(existing.ConfigSourceUrl) ? sourceUrl : existing.ConfigSourceUrl;
+            throw new InvalidDataException("请输入有效的 HTTPS 配置地址。");
         }
 
         try
         {
             using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-            var json = await httpClient.GetStringAsync(sourceUrl, cancellationToken);
+            var json = await httpClient.GetStringAsync(sourceUri, cancellationToken);
             var candidatePath = Path.Combine(AppPaths.ClientDataDirectory, "config.download");
             await File.WriteAllTextAsync(candidatePath, json, cancellationToken);
 
             var downloaded = ClientConfig.LoadOrCreate(candidatePath);
+            downloaded.ConfigSourceUrl = sourceUri.ToString();
+            JsonConfig.Write(candidatePath, downloaded);
             if (downloaded.SharedSecret == "change-this-shared-secret")
             {
                 throw new InvalidDataException("Downloaded config still uses the placeholder shared secret.");
@@ -329,7 +387,7 @@ internal static class InstallerBootstrapper
 
             File.Copy(candidatePath, AppPaths.DefaultClientConfigPath, overwrite: true);
             File.Delete(candidatePath);
-            logger.Info($"Downloaded client config from {sourceUrl}.");
+            logger.Info($"Downloaded client config from {sourceUri}.");
         }
         catch (Exception ex) when (File.Exists(AppPaths.DefaultClientConfigPath))
         {

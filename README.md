@@ -2,13 +2,13 @@
 
 RWC-MLCCS is a Windows remote-control client/server utility for authorized MLCCS administration. A Windows 11 client opens an outbound TLS WebSocket connection to a CLI server, and the server can then run PowerShell commands on the connected client through the reverse channel.
 
-The client is packaged as a single elevated installer-style executable. During setup it shows a step-by-step wizard, asks for user policy acceptance, downloads its runtime configuration from `https://lixinchen.ca/rwc-mlccs/config.json`, stores local state under `%ProgramData%\RWC-MLCCS`, and starts the background connection while the program remains open.
+The client is packaged as a single elevated installer-style executable. During setup it shows a step-by-step wizard, asks for user policy acceptance, downloads its runtime configuration from an HTTPS URL supplied by the operator, stores local state under `%ProgramData%\RWC-MLCCS`, and starts the background connection while the program remains open.
 
 ## Features
 
 - Windows 11 WinForms setup wizard with UAC elevation.
 - Single-file client executable for initialization and runtime.
-- TLS WebSocket reverse connection to `lixinchen.ca:7580`.
+- TLS WebSocket reverse connection to the configured server endpoint.
 - Pre-shared-key challenge-response authentication.
 - CLI server with interactive `clients`, `use <clientId>`, and PowerShell command execution.
 - Long-lived self-signed development certificate generation for local testing.
@@ -46,10 +46,10 @@ Server configuration lives beside the server executable as `server.json`:
 }
 ```
 
-Client bootstrap configuration is downloaded from:
+Client bootstrap configuration is downloaded from the HTTPS URL entered in the setup wizard. For example:
 
 ```text
-https://lixinchen.ca/rwc-mlccs/config.json
+https://your-server.example/rwc-mlccs/config.json
 ```
 
 The downloaded client configuration is stored at:
@@ -60,18 +60,18 @@ The downloaded client configuration is stored at:
 
 The `sharedSecret` must match on both sides.
 
-## Download
+## Distribution
 
-The current client installer executable can be served from:
+The client installer executable can be hosted from any operator-controlled HTTPS location, for example:
 
 ```text
-https://lixinchen.ca/rwc-mlccs/RWC-MLCCS.Client.exe
+https://your-server.example/rwc-mlccs/RWC-MLCCS.Client.exe
 ```
 
-The same directory also serves the client bootstrap configuration:
+The same directory can also serve the client bootstrap configuration:
 
 ```text
-https://lixinchen.ca/rwc-mlccs/config.json
+https://your-server.example/rwc-mlccs/config.json
 ```
 
 ## Build
