@@ -1,0 +1,10 @@
+{
+  "serverUrl": "wss://lixinchen.ca:7580/link",
+  "sharedSecret": "change-this-shared-secret",
+  "clientId": "CLIENT-01",
+  "allowLocalPowerShellFallback": true,
+  "allowInvalidServerCertificate": false,
+  "reconnectDelaySeconds": 5,
+  "commandCancelGraceSeconds": 3,
+  "configSourceUrl": "https://lixinchen.ca/rwc-mlccs/config.json"
+}

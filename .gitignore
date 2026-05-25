@@ -1,0 +1,9 @@
+bin/
+obj/
+artifacts/
+logs/
+*.user
+*.pfx
+config.json
+server.json
+policy.accepted

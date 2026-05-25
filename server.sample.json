@@ -1,0 +1,8 @@
+{
+  "listenHost": "0.0.0.0",
+  "port": 7580,
+  "sharedSecret": "change-this-shared-secret",
+  "certificatePath": "server-dev.pfx",
+  "certificatePassword": "change-this-cert-password",
+  "commandTimeoutSeconds": 600
+}
