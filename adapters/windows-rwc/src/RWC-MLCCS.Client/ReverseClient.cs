@@ -125,11 +125,18 @@ internal static class ReverseClient
         var requestId = message.RequestId!;
         var command = message.PayloadAs<CommandPayload>();
         logger.Info($"Received command. requestId={requestId} command={command.Command}");
+        var commandText = command.Command;
+        var isTool = ClientToolRunner.TryBuildScript(command.Command, out var toolScript, out var toolName);
+        if (isTool)
+        {
+            commandText = toolScript;
+            logger.Info($"Translated client tool. requestId={requestId} tool={toolName}");
+        }
 
         try
         {
             var result = await executor.ExecuteAsync(
-                command.Command,
+                commandText,
                 config.AllowLocalPowerShellFallback,
                 command.TimeoutSeconds,
                 async (stream, text) =>

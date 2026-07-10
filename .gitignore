@@ -1,9 +1,18 @@
-bin/
-obj/
-artifacts/
-logs/
-*.user
-*.pfx
-config.json
-server.json
-policy.accepted
+.DS_Store
+
+# RMC
+**/node_modules/
+**/artifacts/
+**/config/*.private.json
+**/config/*.shared-secret
+**/config/tls/
+
+# RWC
+**/bin/
+**/obj/
+**/logs/
+**/*.user
+**/*.pfx
+**/config.json
+**/server.json
+**/policy.accepted

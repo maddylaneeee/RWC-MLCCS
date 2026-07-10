@@ -1,0 +1,19 @@
+{
+  "name": "rmc-mlccs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Remote Mac Control for authorized MLCCS administration.",
+  "bin": {
+    "rmc-server": "./server/rmc-server.mjs"
+  },
+  "scripts": {
+    "build:client": "bash scripts/build-client.sh",
+    "build:server": "bash scripts/build-server.sh",
+    "build": "bash scripts/build-all.sh",
+    "check": "node --check server/rmc-server.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}

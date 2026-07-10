@@ -62,6 +62,8 @@ public sealed class ServerConfig
 
     public string CertificatePassword { get; set; } = "change-this-cert-password";
 
+    public string[] CertificateDnsNames { get; set; } = [];
+
     public int CommandTimeoutSeconds { get; set; } = 600;
 
     public static ServerConfig LoadOrCreate(string path)

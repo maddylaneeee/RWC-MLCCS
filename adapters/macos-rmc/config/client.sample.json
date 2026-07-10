@@ -1,0 +1,11 @@
+{
+  "serverUrl": "wss://lixinchen.ca:5002/link",
+  "sharedSecret": "change-this-shared-secret",
+  "clientId": "",
+  "allowInvalidServerCertificate": false,
+  "pinnedServerCertificateSha256": "",
+  "reconnectDelaySeconds": 5,
+  "commandTimeoutSeconds": 600,
+  "requireSudoBeforeConnect": true,
+  "allowRootCommands": true
+}

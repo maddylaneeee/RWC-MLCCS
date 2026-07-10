@@ -13,6 +13,8 @@ var configPath = args.Length >= 2 && args[0] == "--config" ? args[1] : AppPaths.
 var config = ServerConfig.LoadOrCreate(configPath);
 var logger = new FileLogger("server");
 var registry = new ClientRegistry(logger);
+var useHttps = !args.Contains("--http", StringComparer.OrdinalIgnoreCase);
+var headless = args.Contains("--headless", StringComparer.OrdinalIgnoreCase);
 
 if (args.Contains("--init", StringComparer.OrdinalIgnoreCase))
 {
@@ -22,11 +24,11 @@ if (args.Contains("--init", StringComparer.OrdinalIgnoreCase))
     return;
 }
 
-var certificate = CertificateFactory.EnsureCertificate(configPath, config, logger);
+var certificate = useHttps ? CertificateFactory.EnsureCertificate(configPath, config, logger) : null;
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.ConfigureKestrel(options =>
 {
-    ConfigureListen(options, config, certificate);
+    ConfigureListen(options, config, certificate, useHttps);
 });
 
 var app = builder.Build();
@@ -47,11 +49,60 @@ app.Map("/link", async context =>
     await ClientSession.HandleAsync(socket, config, registry, logger, context.RequestAborted);
 });
 
-var runTask = app.RunAsync();
-Console.WriteLine($"RWC-MLCCS server listening on wss://{config.ListenHost}:{config.Port}/link");
-Console.WriteLine($"Config: {configPath}");
-Console.WriteLine("Commands: clients | use <clientId> | exit");
+app.MapGet("/operator/clients", async context =>
+{
+    if (!IsLoopback(context))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return;
+    }
 
+    await context.Response.WriteAsJsonAsync(registry.List().Select(client => new
+    {
+        client.ClientId,
+        client.UserName,
+        client.MachineName,
+        client.ConnectedAt
+    }));
+});
+
+app.MapPost("/operator/execute", async context =>
+{
+    if (!IsLoopback(context))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return;
+    }
+
+    var request = await context.Request.ReadFromJsonAsync<OperatorCommandRequest>();
+    if (request is null || string.IsNullOrWhiteSpace(request.ClientId) || string.IsNullOrWhiteSpace(request.Command))
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        return;
+    }
+
+    var client = registry.Get(request.ClientId);
+    if (client is null)
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
+    var timeoutSeconds = request.TimeoutSeconds is > 0 ? request.TimeoutSeconds.Value : config.CommandTimeoutSeconds;
+    var result = await client.ExecuteWithOutputAsync(request.Command, timeoutSeconds);
+    await context.Response.WriteAsJsonAsync(result);
+});
+
+var runTask = app.RunAsync();
+Console.WriteLine($"RWC-MLCCS server listening on {(useHttps ? "wss" : "ws")}://{config.ListenHost}:{config.Port}/link");
+Console.WriteLine($"Config: {configPath}");
+if (headless)
+{
+    await runTask;
+    return;
+}
+
+Console.WriteLine("Commands: clients | use <clientId> | exit");
 await InteractiveShell.RunAsync(registry, config, logger);
 using (var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
 {
@@ -59,21 +110,34 @@ using (var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
 }
 await runTask;
 
-static void ConfigureListen(KestrelServerOptions options, ServerConfig config, X509Certificate2 certificate)
+static bool IsLoopback(HttpContext context)
 {
+    return context.Connection.RemoteIpAddress is { } address && IPAddress.IsLoopback(address);
+}
+
+static void ConfigureListen(KestrelServerOptions options, ServerConfig config, X509Certificate2? certificate, bool useHttps)
+{
+    static void ConfigureEndpoint(ListenOptions listen, X509Certificate2? certificate, bool useHttps)
+    {
+        if (useHttps)
+        {
+            listen.UseHttps(certificate!);
+        }
+    }
+
     if (config.ListenHost is "0.0.0.0" or "*" or "+")
     {
-        options.ListenAnyIP(config.Port, listen => listen.UseHttps(certificate));
+        options.ListenAnyIP(config.Port, listen => ConfigureEndpoint(listen, certificate, useHttps));
         return;
     }
 
     if (IPAddress.TryParse(config.ListenHost, out var address))
     {
-        options.Listen(address, config.Port, listen => listen.UseHttps(certificate));
+        options.Listen(address, config.Port, listen => ConfigureEndpoint(listen, certificate, useHttps));
         return;
     }
 
-    options.ListenLocalhost(config.Port, listen => listen.UseHttps(certificate));
+    options.ListenLocalhost(config.Port, listen => ConfigureEndpoint(listen, certificate, useHttps));
 }
 
 internal static class InteractiveShell
@@ -176,7 +240,7 @@ internal sealed class ConnectedClient
     private readonly WebSocket _socket;
     private readonly FileLogger _logger;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
-    private readonly ConcurrentDictionary<string, TaskCompletionSource<CompletePayload>> _pending = new();
+    private readonly ConcurrentDictionary<string, PendingCommand> _pending = new();
 
     public ConnectedClient(string clientId, string userName, string machineName, WebSocket socket, FileLogger logger)
     {
@@ -198,13 +262,19 @@ internal sealed class ConnectedClient
 
     public async Task<CompletePayload> ExecuteAsync(string command, int timeoutSeconds)
     {
+        return (await ExecuteWithOutputAsync(command, timeoutSeconds)).Complete;
+    }
+
+    public async Task<OperatorCommandResult> ExecuteWithOutputAsync(string command, int timeoutSeconds)
+    {
         var requestId = Guid.NewGuid().ToString("N");
-        var tcs = new TaskCompletionSource<CompletePayload>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pending[requestId] = tcs;
+        var pending = new PendingCommand();
+        _pending[requestId] = pending;
 
         await SendAsync(ProtocolEnvelope.Create("command", requestId, new CommandPayload(command, timeoutSeconds)), CancellationToken.None);
         _logger.Info($"Sent command to {ClientId}. requestId={requestId} command={command}");
-        return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(timeoutSeconds + 30));
+        var complete = await pending.Completion.Task.WaitAsync(TimeSpan.FromSeconds(timeoutSeconds + 30));
+        return new OperatorCommandResult(complete, pending.Stdout.ToString(), pending.Stderr.ToString());
     }
 
     public async Task ReceiveLoopAsync(CancellationToken cancellationToken)
@@ -220,6 +290,12 @@ internal sealed class ConnectedClient
             if (message.Type.Equals("output", StringComparison.OrdinalIgnoreCase))
             {
                 var output = message.PayloadAs<OutputPayload>();
+                if (message.RequestId is not null && _pending.TryGetValue(message.RequestId, out var pending))
+                {
+                    (output.Stream.Equals("stderr", StringComparison.OrdinalIgnoreCase) ? pending.Stderr : pending.Stdout)
+                        .Append(output.Text);
+                }
+
                 Console.Write(output.Stream.Equals("stderr", StringComparison.OrdinalIgnoreCase) ? $"[stderr] {output.Text}" : output.Text);
                 _logger.Info($"Output {ClientId} {message.RequestId} {output.Stream}: {output.Text.TrimEnd()}");
             }
@@ -228,7 +304,7 @@ internal sealed class ConnectedClient
                 var complete = message.PayloadAs<CompletePayload>();
                 if (_pending.TryRemove(message.RequestId, out var pending))
                 {
-                    pending.TrySetResult(complete);
+                    pending.Completion.TrySetResult(complete);
                 }
             }
             else if (message.Type.Equals("disconnect", StringComparison.OrdinalIgnoreCase))
@@ -251,6 +327,19 @@ internal sealed class ConnectedClient
         }
     }
 }
+
+internal sealed class PendingCommand
+{
+    public TaskCompletionSource<CompletePayload> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public System.Text.StringBuilder Stdout { get; } = new();
+
+    public System.Text.StringBuilder Stderr { get; } = new();
+}
+
+internal sealed record OperatorCommandRequest(string ClientId, string Command, int? TimeoutSeconds);
+
+internal sealed record OperatorCommandResult(CompletePayload Complete, string Stdout, string Stderr);
 
 internal static class ClientSession
 {
@@ -343,8 +432,21 @@ internal static class CertificateFactory
 
         var sanBuilder = new SubjectAlternativeNameBuilder();
         sanBuilder.AddDnsName("localhost");
+        foreach (var dnsName in config.CertificateDnsNames.Where(name => !string.IsNullOrWhiteSpace(name)))
+        {
+            sanBuilder.AddDnsName(dnsName);
+        }
+
         sanBuilder.AddIpAddress(IPAddress.Loopback);
         sanBuilder.AddIpAddress(IPAddress.Parse("127.0.0.1"));
+        if (IPAddress.TryParse(config.ListenHost, out var listenAddress)
+            && !IPAddress.IsLoopback(listenAddress)
+            && !listenAddress.Equals(IPAddress.Any)
+            && !listenAddress.Equals(IPAddress.IPv6Any))
+        {
+            sanBuilder.AddIpAddress(listenAddress);
+        }
+
         request.CertificateExtensions.Add(sanBuilder.Build());
 
         using var generated = request.CreateSelfSigned(DateTimeOffset.Now.AddDays(-1), DateTimeOffset.Now.AddYears(100));
