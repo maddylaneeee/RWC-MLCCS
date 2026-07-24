@@ -47,25 +47,37 @@ enum JSONValue: Codable, Equatable {
 }
 
 struct ProtocolEnvelope: Codable {
+    var v: Int
     var type: String
-    var requestId: String?
-    var payload: JSONValue?
+    var messageId: String
+    var ts: Int64
+    var sessionId: String? = nil
+    var seq: String? = nil
+    var from: String? = nil
+    var to: String? = nil
+    var body: JSONValue? = nil
 
-    static func make(_ type: String, requestId: String? = nil) -> ProtocolEnvelope {
-        ProtocolEnvelope(type: type, requestId: requestId, payload: nil)
+    static func make(_ type: String) -> ProtocolEnvelope {
+        ProtocolEnvelope(v: 2, type: type, messageId: UUID().uuidString.lowercased(), ts: nowMs(), body: nil)
     }
 
-    static func make<T: Encodable>(_ type: String, requestId: String? = nil, payload: T) throws -> ProtocolEnvelope {
-        let data = try JSONEncoder.rmc.encode(payload)
+    static func make<T: Encodable>(_ type: String, body: T, ts: Int64? = nil) throws -> ProtocolEnvelope {
+        let data = try JSONEncoder.rmc.encode(body)
         let value = try JSONDecoder.rmc.decode(JSONValue.self, from: data)
-        return ProtocolEnvelope(type: type, requestId: requestId, payload: value)
+        return ProtocolEnvelope(
+            v: 2,
+            type: type,
+            messageId: UUID().uuidString.lowercased(),
+            ts: ts ?? nowMs(),
+            body: value
+        )
     }
 
-    func payloadAs<T: Decodable>(_ type: T.Type) throws -> T {
-        guard let payload else {
-            throw RMCError.protocolError("Message '\(self.type)' has no payload.")
+    func bodyAs<T: Decodable>(_ type: T.Type) throws -> T {
+        guard let body else {
+            throw RMCError.protocolError("Message '\(self.type)' has no body.")
         }
-        let data = try JSONEncoder.rmc.encode(payload)
+        let data = try JSONEncoder.rmc.encode(body)
         return try JSONDecoder.rmc.decode(T.self, from: data)
     }
 }
@@ -75,12 +87,42 @@ struct ChallengePayload: Codable {
 }
 
 struct AuthPayload: Codable {
-    var clientId: String
+    var role: String
+    var principalId: String
+    var keyId: String
+    var clientNonce: String
+    var proof: String
+    var metadata: DeviceMetadata
+}
+
+struct DeviceMetadata: Codable {
     var userName: String
     var machineName: String
     var platform: String
     var appVersion: String
-    var response: String
+    var adapter: String
+}
+
+struct AuthOKPayload: Codable {
+    var connectionId: String
+    var heartbeatSeconds: Int
+    var serverTime: Int64
+}
+
+struct SessionReadyPayload: Codable {
+    var operatorId: String
+    var deviceId: String
+    var expiresAt: Int64
+}
+
+struct RelayBody: Codable {
+    var nonce: String
+    var ciphertext: String
+    var tag: String
+}
+
+struct HeartbeatPayload: Codable {
+    var nonce: String
 }
 
 struct CommandPayload: Codable {
@@ -101,6 +143,31 @@ struct CompletePayload: Codable {
     var exitCode: Int
     var cancelled: Bool
     var durationMs: Int64
+}
+
+struct InnerEnvelope<T: Codable>: Codable {
+    var type: String
+    var requestId: String
+    var issuedAt: Int64
+    var expiresAt: Int64
+    var body: T
+}
+
+struct InnerRawEnvelope: Codable {
+    var type: String
+    var requestId: String
+    var issuedAt: Int64
+    var expiresAt: Int64
+    var body: JSONValue
+
+    func bodyAs<T: Decodable>(_ type: T.Type) throws -> T {
+        let data = try JSONEncoder.rmc.encode(body)
+        return try JSONDecoder.rmc.decode(T.self, from: data)
+    }
+}
+
+func nowMs() -> Int64 {
+    Int64(Date().timeIntervalSince1970 * 1000)
 }
 
 enum RMCError: Error, LocalizedError {

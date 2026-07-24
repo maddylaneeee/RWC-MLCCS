@@ -2,457 +2,490 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Server.Kestrel.Core;
 using RWC_MLCCS.Common;
 
 var configPath = args.Length >= 2 && args[0] == "--config" ? args[1] : AppPaths.DefaultServerConfigPath;
 var config = ServerConfig.LoadOrCreate(configPath);
-var logger = new FileLogger("server");
-var registry = new ClientRegistry(logger);
-var useHttps = !args.Contains("--http", StringComparer.OrdinalIgnoreCase);
-var headless = args.Contains("--headless", StringComparer.OrdinalIgnoreCase);
-
 if (args.Contains("--init", StringComparer.OrdinalIgnoreCase))
 {
-    var cert = CertificateFactory.EnsureCertificate(configPath, config, logger);
     Console.WriteLine($"Config: {configPath}");
-    Console.WriteLine($"Certificate: {cert}");
+    Console.WriteLine($"Loopback API token: {config.LoopbackApi.BearerToken}");
     return;
 }
 
-var certificate = useHttps ? CertificateFactory.EnsureCertificate(configPath, config, logger) : null;
-var builder = WebApplication.CreateBuilder(args);
-builder.WebHost.ConfigureKestrel(options =>
-{
-    ConfigureListen(options, config, certificate, useHttps);
-});
+config.Validate();
+var logger = new FileLogger("operator");
+using var stopping = new CancellationTokenSource();
+var client = new OperatorBrokerClient(config, logger);
+var brokerTask = client.RunReconnectLoopAsync(stopping.Token);
+Task? apiTask = null;
+WebApplication? api = null;
 
-var app = builder.Build();
-app.UseWebSockets(new WebSocketOptions
+if (config.LoopbackApi.Enabled)
 {
-    KeepAliveInterval = TimeSpan.FromSeconds(20)
-});
-
-app.Map("/link", async context =>
-{
-    if (!context.WebSockets.IsWebSocketRequest)
+    var builder = WebApplication.CreateBuilder();
+    builder.WebHost.UseUrls($"http://127.0.0.1:{config.LoopbackApi.Port}");
+    api = builder.Build();
+    api.MapGet("/operator/clients", async context =>
     {
-        context.Response.StatusCode = StatusCodes.Status400BadRequest;
-        return;
-    }
-
-    using var socket = await context.WebSockets.AcceptWebSocketAsync();
-    await ClientSession.HandleAsync(socket, config, registry, logger, context.RequestAborted);
-});
-
-app.MapGet("/operator/clients", async context =>
-{
-    if (!IsLoopback(context))
+        if (!ApiAuthorization.IsAllowed(context, config.LoopbackApi.BearerToken)) return;
+        await context.Response.WriteAsJsonAsync(client.ListDevices());
+    });
+    api.MapPost("/operator/execute", async context =>
     {
-        context.Response.StatusCode = StatusCodes.Status403Forbidden;
-        return;
-    }
-
-    await context.Response.WriteAsJsonAsync(registry.List().Select(client => new
-    {
-        client.ClientId,
-        client.UserName,
-        client.MachineName,
-        client.ConnectedAt
-    }));
-});
-
-app.MapPost("/operator/execute", async context =>
-{
-    if (!IsLoopback(context))
-    {
-        context.Response.StatusCode = StatusCodes.Status403Forbidden;
-        return;
-    }
-
-    var request = await context.Request.ReadFromJsonAsync<OperatorCommandRequest>();
-    if (request is null || string.IsNullOrWhiteSpace(request.ClientId) || string.IsNullOrWhiteSpace(request.Command))
-    {
-        context.Response.StatusCode = StatusCodes.Status400BadRequest;
-        return;
-    }
-
-    var client = registry.Get(request.ClientId);
-    if (client is null)
-    {
-        context.Response.StatusCode = StatusCodes.Status404NotFound;
-        return;
-    }
-
-    var timeoutSeconds = request.TimeoutSeconds is > 0 ? request.TimeoutSeconds.Value : config.CommandTimeoutSeconds;
-    var result = await client.ExecuteWithOutputAsync(request.Command, timeoutSeconds);
-    await context.Response.WriteAsJsonAsync(result);
-});
-
-var runTask = app.RunAsync();
-Console.WriteLine($"RWC-MLCCS server listening on {(useHttps ? "wss" : "ws")}://{config.ListenHost}:{config.Port}/link");
-Console.WriteLine($"Config: {configPath}");
-if (headless)
-{
-    await runTask;
-    return;
-}
-
-Console.WriteLine("Commands: clients | use <clientId> | exit");
-await InteractiveShell.RunAsync(registry, config, logger);
-using (var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
-{
-    await app.StopAsync(stopCts.Token);
-}
-await runTask;
-
-static bool IsLoopback(HttpContext context)
-{
-    return context.Connection.RemoteIpAddress is { } address && IPAddress.IsLoopback(address);
-}
-
-static void ConfigureListen(KestrelServerOptions options, ServerConfig config, X509Certificate2? certificate, bool useHttps)
-{
-    static void ConfigureEndpoint(ListenOptions listen, X509Certificate2? certificate, bool useHttps)
-    {
-        if (useHttps)
+        if (!ApiAuthorization.IsAllowed(context, config.LoopbackApi.BearerToken)) return;
+        var request = await context.Request.ReadFromJsonAsync<OperatorCommandRequest>();
+        if (request is null || string.IsNullOrWhiteSpace(request.DeviceId) || string.IsNullOrWhiteSpace(request.Command))
         {
-            listen.UseHttps(certificate!);
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
         }
-    }
 
-    if (config.ListenHost is "0.0.0.0" or "*" or "+")
-    {
-        options.ListenAnyIP(config.Port, listen => ConfigureEndpoint(listen, certificate, useHttps));
-        return;
-    }
+        try
+        {
+            var result = await client.ExecuteAsync(
+                request.DeviceId, request.Command,
+                request.TimeoutSeconds is > 0 ? request.TimeoutSeconds.Value : config.CommandTimeoutSeconds,
+                context.RequestAborted);
+            await context.Response.WriteAsJsonAsync(result);
+        }
+        catch (KeyNotFoundException)
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+        }
+        catch (TimeoutException)
+        {
+            context.Response.StatusCode = StatusCodes.Status504GatewayTimeout;
+        }
+    });
+    apiTask = api.RunAsync();
+    Console.WriteLine($"Loopback API: http://127.0.0.1:{config.LoopbackApi.Port} (Bearer token in config)");
+}
 
-    if (IPAddress.TryParse(config.ListenHost, out var address))
-    {
-        options.Listen(address, config.Port, listen => ConfigureEndpoint(listen, certificate, useHttps));
-        return;
-    }
+if (args.Contains("--headless", StringComparer.OrdinalIgnoreCase))
+{
+    await brokerTask;
+}
+else
+{
+    Console.WriteLine($"RWC operator connecting outbound to CRC broker as {config.OperatorId}.");
+    Console.WriteLine("Commands: clients | use <deviceId> | exit");
+    await InteractiveShell.RunAsync(client, config, logger, stopping.Token);
+    stopping.Cancel();
+}
 
-    options.ListenLocalhost(config.Port, listen => ConfigureEndpoint(listen, certificate, useHttps));
+if (api is not null)
+{
+    try { await api.StopAsync(); } catch { }
+}
+try { await brokerTask; } catch (OperationCanceledException) { }
+if (apiTask is not null)
+{
+    try { await apiTask; } catch (OperationCanceledException) { }
 }
 
 internal static class InteractiveShell
 {
-    public static async Task RunAsync(ClientRegistry registry, ServerConfig config, FileLogger logger)
+    public static async Task RunAsync(
+        OperatorBrokerClient client,
+        ServerConfig config,
+        FileLogger logger,
+        CancellationToken cancellationToken)
     {
-        ConnectedClient? selected = null;
-        while (true)
+        string? selected = null;
+        while (!cancellationToken.IsCancellationRequested)
         {
-            Console.Write(selected is null ? "server> " : $"{selected.ClientId}> ");
-            var line = Console.ReadLine();
-            if (line is null)
-            {
-                break;
-            }
-
-            line = line.Trim();
-            if (line.Length == 0)
-            {
-                continue;
-            }
-
-            if (line.Equals("exit", StringComparison.OrdinalIgnoreCase) ||
-                line.Equals("quit", StringComparison.OrdinalIgnoreCase))
-            {
-                break;
-            }
+            Console.Write(selected is null ? "operator> " : $"{selected}> ");
+            var line = Console.ReadLine()?.Trim();
+            if (line is null || line.Equals("exit", StringComparison.OrdinalIgnoreCase) ||
+                line.Equals("quit", StringComparison.OrdinalIgnoreCase)) return;
+            if (line.Length == 0) continue;
 
             if (line.Equals("clients", StringComparison.OrdinalIgnoreCase))
             {
-                foreach (var client in registry.List())
-                {
-                    Console.WriteLine($"{client.ClientId}\t{client.UserName}\t{client.MachineName}\tconnected={client.ConnectedAt:O}");
-                }
-
+                foreach (var device in client.ListDevices())
+                    Console.WriteLine($"{device.DeviceId}\tconnected={DateTimeOffset.FromUnixTimeMilliseconds(device.ConnectedAt):O}");
                 continue;
             }
 
             if (line.StartsWith("use ", StringComparison.OrdinalIgnoreCase))
             {
                 var id = line[4..].Trim();
-                selected = registry.Get(id);
-                Console.WriteLine(selected is null ? $"Client not found: {id}" : $"Selected {selected.ClientId}");
+                selected = config.Devices.ContainsKey(id) ? id : null;
+                Console.WriteLine(selected is null ? $"Device is not configured: {id}" : $"Selected {selected}");
                 continue;
             }
 
             if (selected is null)
             {
-                Console.WriteLine("Select a client first: use <clientId>");
+                Console.WriteLine("Select a device first: use <deviceId>");
                 continue;
             }
 
             try
             {
-                var result = await selected.ExecuteAsync(line, config.CommandTimeoutSeconds);
-                Console.WriteLine($"[complete] exit={result.ExitCode} cancelled={result.Cancelled} winrm={result.UsedWinRm} durationMs={result.DurationMs}");
+                var result = await client.ExecuteAsync(selected, line, config.CommandTimeoutSeconds, cancellationToken);
+                if (result.Stdout.Length > 0) Console.Write(result.Stdout);
+                if (result.Stderr.Length > 0) Console.Error.Write(result.Stderr);
+                Console.WriteLine($"[complete] exit={result.Complete.ExitCode} cancelled={result.Complete.Cancelled} " +
+                                  $"winrm={result.Complete.UsedWinRm} durationMs={result.Complete.DurationMs}");
             }
             catch (Exception ex)
             {
-                logger.Error("Command dispatch failed.", ex);
+                logger.Error("Encrypted command dispatch failed.", ex);
                 Console.WriteLine($"[error] {ex.Message}");
             }
         }
     }
 }
 
-internal sealed class ClientRegistry
+internal static class ApiAuthorization
 {
-    private readonly ConcurrentDictionary<string, ConnectedClient> _clients = new(StringComparer.OrdinalIgnoreCase);
-    private readonly FileLogger _logger;
-
-    public ClientRegistry(FileLogger logger)
+    public static bool IsAllowed(HttpContext context, string expectedToken)
     {
-        _logger = logger;
+        if (context.Connection.RemoteIpAddress is not { } address || !IPAddress.IsLoopback(address))
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return false;
+        }
+
+        var supplied = context.Request.Headers.Authorization.ToString();
+        const string prefix = "Bearer ";
+        if (!supplied.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
+            !FixedEquals(supplied[prefix.Length..], expectedToken))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            context.Response.Headers.WWWAuthenticate = "Bearer";
+            return false;
+        }
+        return true;
     }
 
-    public void Add(ConnectedClient client)
+    private static bool FixedEquals(string left, string right)
     {
-        _clients[client.ClientId] = client;
-        _logger.Info($"Client connected: {client.ClientId} {client.UserName}@{client.MachineName}");
+        var a = SHA256.HashData(Encoding.UTF8.GetBytes(left));
+        var b = SHA256.HashData(Encoding.UTF8.GetBytes(right));
+        return CryptographicOperations.FixedTimeEquals(a, b);
     }
-
-    public void Remove(string clientId)
-    {
-        _clients.TryRemove(clientId, out _);
-        _logger.Info($"Client disconnected: {clientId}");
-    }
-
-    public ConnectedClient? Get(string clientId)
-    {
-        _clients.TryGetValue(clientId, out var client);
-        return client;
-    }
-
-    public IReadOnlyCollection<ConnectedClient> List() => _clients.Values.OrderBy(c => c.ClientId).ToArray();
 }
 
-internal sealed class ConnectedClient
+internal sealed class OperatorBrokerClient
 {
-    private readonly WebSocket _socket;
+    private readonly ServerConfig _config;
     private readonly FileLogger _logger;
-    private readonly SemaphoreSlim _sendLock = new(1, 1);
-    private readonly ConcurrentDictionary<string, PendingCommand> _pending = new();
+    private readonly ConcurrentDictionary<string, PresenceDevice> _devices = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, OperatorSession> _sessions = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<OperatorSession>> _opening =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, PendingCommand> _pending = new(StringComparer.Ordinal);
+    private readonly object _socketGate = new();
+    private ClientWebSocket? _socket;
+    private SemaphoreSlim? _sendLock;
 
-    public ConnectedClient(string clientId, string userName, string machineName, WebSocket socket, FileLogger logger)
+    public OperatorBrokerClient(ServerConfig config, FileLogger logger)
     {
-        ClientId = clientId;
-        UserName = userName;
-        MachineName = machineName;
-        ConnectedAt = DateTimeOffset.Now;
-        _socket = socket;
+        _config = config;
         _logger = logger;
     }
 
-    public string ClientId { get; }
+    public IReadOnlyCollection<PresenceDevice> ListDevices() =>
+        _devices.Values.OrderBy(device => device.DeviceId).ToArray();
 
-    public string UserName { get; }
-
-    public string MachineName { get; }
-
-    public DateTimeOffset ConnectedAt { get; }
-
-    public async Task<CompletePayload> ExecuteAsync(string command, int timeoutSeconds)
+    public async Task RunReconnectLoopAsync(CancellationToken cancellationToken)
     {
-        return (await ExecuteWithOutputAsync(command, timeoutSeconds)).Complete;
-    }
-
-    public async Task<OperatorCommandResult> ExecuteWithOutputAsync(string command, int timeoutSeconds)
-    {
-        var requestId = Guid.NewGuid().ToString("N");
-        var pending = new PendingCommand();
-        _pending[requestId] = pending;
-
-        await SendAsync(ProtocolEnvelope.Create("command", requestId, new CommandPayload(command, timeoutSeconds)), CancellationToken.None);
-        _logger.Info($"Sent command to {ClientId}. requestId={requestId} command={command}");
-        var complete = await pending.Completion.Task.WaitAsync(TimeSpan.FromSeconds(timeoutSeconds + 30));
-        return new OperatorCommandResult(complete, pending.Stdout.ToString(), pending.Stderr.ToString());
-    }
-
-    public async Task ReceiveLoopAsync(CancellationToken cancellationToken)
-    {
-        while (_socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
+        var delay = Math.Max(1, _config.ReconnectDelaySeconds);
+        while (!cancellationToken.IsCancellationRequested)
         {
-            var message = await WebSocketJson.ReceiveAsync(_socket, cancellationToken);
-            if (message is null)
+            try
+            {
+                await RunOnceAsync(cancellationToken);
+                delay = Math.Max(1, _config.ReconnectDelaySeconds);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 break;
             }
+            catch (Exception ex)
+            {
+                _logger.Error("Operator broker connection failed.", ex);
+            }
+            finally
+            {
+                DisconnectPending();
+            }
 
-            if (message.Type.Equals("output", StringComparison.OrdinalIgnoreCase))
-            {
-                var output = message.PayloadAs<OutputPayload>();
-                if (message.RequestId is not null && _pending.TryGetValue(message.RequestId, out var pending))
-                {
-                    (output.Stream.Equals("stderr", StringComparison.OrdinalIgnoreCase) ? pending.Stderr : pending.Stdout)
-                        .Append(output.Text);
-                }
-
-                Console.Write(output.Stream.Equals("stderr", StringComparison.OrdinalIgnoreCase) ? $"[stderr] {output.Text}" : output.Text);
-                _logger.Info($"Output {ClientId} {message.RequestId} {output.Stream}: {output.Text.TrimEnd()}");
-            }
-            else if (message.Type.Equals("complete", StringComparison.OrdinalIgnoreCase) && message.RequestId is not null)
-            {
-                var complete = message.PayloadAs<CompletePayload>();
-                if (_pending.TryRemove(message.RequestId, out var pending))
-                {
-                    pending.Completion.TrySetResult(complete);
-                }
-            }
-            else if (message.Type.Equals("disconnect", StringComparison.OrdinalIgnoreCase))
-            {
-                break;
-            }
+            var jitter = Random.Shared.NextDouble() * Math.Min(1, delay * 0.2);
+            await Task.Delay(TimeSpan.FromSeconds(delay + jitter), cancellationToken);
+            delay = Math.Min(Math.Max(delay + 1, delay * 2), Math.Max(delay, _config.MaxReconnectDelaySeconds));
         }
     }
 
-    private async Task SendAsync(ProtocolEnvelope envelope, CancellationToken cancellationToken)
+    public async Task<OperatorCommandResult> ExecuteAsync(
+        string deviceId,
+        string command,
+        int timeoutSeconds,
+        CancellationToken cancellationToken)
     {
-        await _sendLock.WaitAsync(cancellationToken);
+        if (!_config.Devices.ContainsKey(deviceId)) throw new KeyNotFoundException("Device is not configured.");
+        timeoutSeconds = Math.Clamp(timeoutSeconds, 1, 3600);
+        var session = await GetOrOpenSessionAsync(deviceId, cancellationToken);
+        var requestId = BrokerCrypto.RandomId();
+        var pending = new PendingCommand();
+        if (!_pending.TryAdd(requestId, pending)) throw new InvalidOperationException("Request id collision.");
         try
         {
-            await WebSocketJson.SendAsync(_socket, envelope, cancellationToken);
+            var inner = InnerMessage.Create("command.execute", requestId,
+                new CommandPayload(command, timeoutSeconds), TimeSpan.FromSeconds(timeoutSeconds + 30));
+            await SendAsync(session.CreateOutbound(inner), cancellationToken);
+            _logger.Info($"Sent encrypted command. deviceId={deviceId} sessionId={session.SessionId} requestId={requestId}");
+            return await pending.Completion.Task.WaitAsync(TimeSpan.FromSeconds(timeoutSeconds + 30), cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            throw;
         }
         finally
         {
-            _sendLock.Release();
+            _pending.TryRemove(requestId, out _);
         }
+    }
+
+    private async Task RunOnceAsync(CancellationToken cancellationToken)
+    {
+        using var socket = new ClientWebSocket();
+        socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+        var sendLock = new SemaphoreSlim(1, 1);
+        await socket.ConnectAsync(new Uri(_config.BrokerUrl), cancellationToken);
+        var auth = await BrokerConnection.AuthenticateAsync(
+            socket, sendLock, "operator", _config.OperatorId, _config.KeyId, _config.BrokerAuthKey,
+            new { adapter = "windows-rwc" }, cancellationToken);
+        lock (_socketGate)
+        {
+            _socket = socket;
+            _sendLock = sendLock;
+        }
+        _logger.Info($"Operator authenticated to CRC broker. connectionId={auth.ConnectionId}");
+
+        try
+        {
+            while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
+            {
+                var message = await WebSocketJson.ReceiveAsync(socket, cancellationToken);
+                if (message is null) break;
+                await HandleMessageAsync(socket, sendLock, message, cancellationToken);
+            }
+        }
+        finally
+        {
+            lock (_socketGate)
+            {
+                if (ReferenceEquals(_socket, socket))
+                {
+                    _socket = null;
+                    _sendLock = null;
+                }
+            }
+        }
+    }
+
+    private async Task HandleMessageAsync(
+        ClientWebSocket socket,
+        SemaphoreSlim sendLock,
+        ProtocolEnvelope message,
+        CancellationToken cancellationToken)
+    {
+        if (message.Type == "heartbeat.ping")
+        {
+            await BrokerConnection.ReplyHeartbeatAsync(socket, sendLock, message, cancellationToken);
+            return;
+        }
+        if (message.Type == "presence.snapshot")
+        {
+            var snapshot = message.BodyAs<PresenceSnapshotBody>();
+            _devices.Clear();
+            foreach (var device in snapshot.Devices) _devices[device.DeviceId] = device;
+            return;
+        }
+        if (message.Type == "session.ready" && message.SessionId is not null)
+        {
+            var ready = message.BodyAs<SessionReadyBody>();
+            if (!_config.Devices.TryGetValue(ready.DeviceId, out var deviceConfig) ||
+                ready.OperatorId != _config.OperatorId)
+                throw new InvalidDataException("Broker returned an unauthorized session.");
+            var readySession = new OperatorSession(
+                message.SessionId, ready.OperatorId, ready.DeviceId,
+                BrokerCrypto.DeriveSessionKey(deviceConfig.E2eeKey, message.SessionId, ready.OperatorId, ready.DeviceId),
+                ready.ExpiresAt);
+            _sessions[message.SessionId] = readySession;
+            if (_opening.TryRemove(ready.DeviceId, out var opening)) opening.TrySetResult(readySession);
+            return;
+        }
+        if (message.Type == "session.denied")
+        {
+            var deviceId = message.Body?["deviceId"]?.GetValue<string>();
+            if (deviceId is not null && _opening.TryRemove(deviceId, out var opening))
+                opening.TrySetException(new InvalidOperationException("Broker denied the session."));
+            return;
+        }
+        if (message.Type == "session.closed" && message.SessionId is not null)
+        {
+            _sessions.TryRemove(message.SessionId, out _);
+            return;
+        }
+        if (message.Type != "relay.data" || message.SessionId is null ||
+            !_sessions.TryGetValue(message.SessionId, out var session)) return;
+
+        session.ValidateInbound(message);
+        var inner = BrokerCrypto.Decrypt(session.Key, message);
+        ValidateInner(inner);
+        if (!_pending.TryGetValue(inner.RequestId, out var pending)) return;
+        if (inner.Type == "command.output")
+        {
+            var output = inner.BodyAs<OutputPayload>();
+            pending.Append(output);
+        }
+        else if (inner.Type == "command.complete")
+        {
+            var complete = inner.BodyAs<CompletePayload>();
+            pending.Complete(complete);
+        }
+    }
+
+    private async Task<OperatorSession> GetOrOpenSessionAsync(string deviceId, CancellationToken cancellationToken)
+    {
+        var existing = _sessions.Values.FirstOrDefault(session =>
+            string.Equals(session.DeviceId, deviceId, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null) return existing;
+
+        var created = new TaskCompletionSource<OperatorSession>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var opening = _opening.GetOrAdd(deviceId, created);
+        if (ReferenceEquals(created, opening))
+            await SendAsync(ProtocolEnvelope.Create("session.open", new SessionOpenBody(deviceId)), cancellationToken);
+        try
+        {
+            return await opening.Task.WaitAsync(TimeSpan.FromSeconds(20), cancellationToken);
+        }
+        finally
+        {
+            _opening.TryRemove(new KeyValuePair<string, TaskCompletionSource<OperatorSession>>(deviceId, opening));
+        }
+    }
+
+    private async Task SendAsync(ProtocolEnvelope message, CancellationToken cancellationToken)
+    {
+        ClientWebSocket? socket;
+        SemaphoreSlim? sendLock;
+        lock (_socketGate)
+        {
+            socket = _socket;
+            sendLock = _sendLock;
+        }
+        if (socket?.State != WebSocketState.Open || sendLock is null)
+            throw new InvalidOperationException("Operator is not connected to the broker.");
+        await WebSocketJson.SendAsync(socket, message, sendLock, cancellationToken);
+    }
+
+    private void DisconnectPending()
+    {
+        var error = new IOException("Broker connection was lost.");
+        foreach (var opening in _opening.Values) opening.TrySetException(error);
+        _opening.Clear();
+        foreach (var pending in _pending.Values) pending.Fail(error);
+        _pending.Clear();
+        _sessions.Clear();
+        _devices.Clear();
+    }
+
+    private static void ValidateInner(InnerMessage inner)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (string.IsNullOrWhiteSpace(inner.RequestId) || inner.IssuedAt > now + 30_000 ||
+            inner.ExpiresAt < now || inner.ExpiresAt <= inner.IssuedAt)
+            throw new InvalidDataException("Encrypted response is expired or invalid.");
+    }
+}
+
+internal sealed class OperatorSession
+{
+    private long _sendSeq;
+    private long _receiveSeq;
+    private readonly HashSet<string> _receivedMessageIds = new(StringComparer.Ordinal);
+
+    public OperatorSession(string sessionId, string operatorId, string deviceId, byte[] key, long expiresAt)
+    {
+        SessionId = sessionId;
+        OperatorId = operatorId;
+        DeviceId = deviceId;
+        Key = key;
+        ExpiresAt = expiresAt;
+    }
+
+    public string SessionId { get; }
+    public string OperatorId { get; }
+    public string DeviceId { get; }
+    public byte[] Key { get; }
+    public long ExpiresAt { get; }
+
+    public void ValidateInbound(ProtocolEnvelope relay)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (now >= ExpiresAt || Math.Abs(now - relay.Ts) > 30_000 ||
+            relay.From != $"device:{DeviceId}" || relay.To != $"operator:{OperatorId}" ||
+            !long.TryParse(relay.Seq, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var seq) ||
+            seq <= 0 || seq.ToString(System.Globalization.CultureInfo.InvariantCulture) != relay.Seq ||
+            seq != Interlocked.Read(ref _receiveSeq) + 1 || !_receivedMessageIds.Add(relay.MessageId))
+            throw new InvalidDataException("Relay sequence, identity, or message id is invalid.");
+        Interlocked.Exchange(ref _receiveSeq, seq);
+        if (_receivedMessageIds.Count > 10_000) throw new InvalidDataException("Session replay window exceeded.");
+    }
+
+    public ProtocolEnvelope CreateOutbound(InnerMessage inner)
+    {
+        var seq = Interlocked.Increment(ref _sendSeq).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var relay = ProtocolEnvelope.Create("relay.data");
+        relay.SessionId = SessionId;
+        relay.Seq = seq;
+        relay.From = $"operator:{OperatorId}";
+        relay.To = $"device:{DeviceId}";
+        relay.Body = System.Text.Json.JsonSerializer.SerializeToNode(
+            BrokerCrypto.Encrypt(Key, inner, SessionId, relay.From, relay.To, seq, relay.MessageId, relay.Ts),
+            Serializer.Options);
+        return relay;
     }
 }
 
 internal sealed class PendingCommand
 {
-    public TaskCompletionSource<CompletePayload> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly object _gate = new();
+    private readonly StringBuilder _stdout = new();
+    private readonly StringBuilder _stderr = new();
+    public TaskCompletionSource<OperatorCommandResult> Completion { get; } =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public System.Text.StringBuilder Stdout { get; } = new();
+    public void Append(OutputPayload output)
+    {
+        lock (_gate)
+        {
+            var target = output.Stream.Equals("stderr", StringComparison.OrdinalIgnoreCase) ? _stderr : _stdout;
+            if (target.Length + output.Text.Length > BrokerCrypto.MaxPlaintextBytes)
+                throw new InvalidDataException("Accumulated command output exceeds size limit.");
+            target.Append(output.Text);
+        }
+    }
 
-    public System.Text.StringBuilder Stderr { get; } = new();
+    public void Complete(CompletePayload complete)
+    {
+        lock (_gate)
+            Completion.TrySetResult(new OperatorCommandResult(complete, _stdout.ToString(), _stderr.ToString()));
+    }
+
+    public void Fail(Exception exception) => Completion.TrySetException(exception);
 }
 
-internal sealed record OperatorCommandRequest(string ClientId, string Command, int? TimeoutSeconds);
-
+internal sealed record OperatorCommandRequest(string DeviceId, string Command, int? TimeoutSeconds);
 internal sealed record OperatorCommandResult(CompletePayload Complete, string Stdout, string Stderr);
-
-internal static class ClientSession
-{
-    public static async Task HandleAsync(
-        WebSocket socket,
-        ServerConfig config,
-        ClientRegistry registry,
-        FileLogger logger,
-        CancellationToken cancellationToken)
-    {
-        var nonce = PskAuthenticator.CreateNonce();
-        await WebSocketJson.SendAsync(socket, ProtocolEnvelope.Create("challenge", payload: new ChallengePayload(nonce)), cancellationToken);
-
-        var authMessage = await WebSocketJson.ReceiveAsync(socket, cancellationToken);
-        if (authMessage is null || !authMessage.Type.Equals("auth", StringComparison.OrdinalIgnoreCase))
-        {
-            await CloseAsync(socket, WebSocketCloseStatus.PolicyViolation, "Missing auth", cancellationToken);
-            return;
-        }
-
-        var auth = authMessage.PayloadAs<AuthPayload>();
-        if (!PskAuthenticator.VerifyResponse(config.SharedSecret, nonce, auth.ClientId, auth.Response))
-        {
-            logger.Info($"Rejected client auth: {auth.ClientId}");
-            await CloseAsync(socket, WebSocketCloseStatus.PolicyViolation, "Bad auth", cancellationToken);
-            return;
-        }
-
-        await WebSocketJson.SendAsync(socket, ProtocolEnvelope.Create("hello", payload: new { serverTime = DateTimeOffset.Now }), cancellationToken);
-
-        var client = new ConnectedClient(auth.ClientId, auth.UserName, auth.MachineName, socket, logger);
-        registry.Add(client);
-        try
-        {
-            await client.ReceiveLoopAsync(cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (WebSocketException ex)
-        {
-            logger.Error($"WebSocket failed for {auth.ClientId}.", ex);
-        }
-        finally
-        {
-            registry.Remove(auth.ClientId);
-        }
-    }
-
-    private static async Task CloseAsync(WebSocket socket, WebSocketCloseStatus status, string description, CancellationToken cancellationToken)
-    {
-        if (socket.State == WebSocketState.Open)
-        {
-            await socket.CloseAsync(status, description, cancellationToken);
-        }
-    }
-}
-
-internal static class CertificateFactory
-{
-    public static X509Certificate2 EnsureCertificate(string configPath, ServerConfig config, FileLogger logger)
-    {
-        var certPath = Path.IsPathRooted(config.CertificatePath)
-            ? config.CertificatePath
-            : Path.Combine(Path.GetDirectoryName(configPath) ?? AppPaths.BaseDirectory, config.CertificatePath);
-
-        if (File.Exists(certPath))
-        {
-            var existing = new X509Certificate2(certPath, config.CertificatePassword);
-            if (existing.NotAfter.ToUniversalTime() > DateTime.UtcNow.AddYears(80))
-            {
-                return existing;
-            }
-
-            existing.Dispose();
-            File.Delete(certPath);
-            logger.Info($"Regenerating development TLS certificate because it expires before the long-lived threshold: {certPath}");
-        }
-
-        Directory.CreateDirectory(Path.GetDirectoryName(certPath) ?? AppPaths.BaseDirectory);
-        using var rsa = RSA.Create(2048);
-        var request = new CertificateRequest(
-            "CN=RWC-MLCCS Development Certificate",
-            rsa,
-            HashAlgorithmName.SHA256,
-            RSASignaturePadding.Pkcs1);
-        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
-        request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, false));
-        request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
-
-        var sanBuilder = new SubjectAlternativeNameBuilder();
-        sanBuilder.AddDnsName("localhost");
-        foreach (var dnsName in config.CertificateDnsNames.Where(name => !string.IsNullOrWhiteSpace(name)))
-        {
-            sanBuilder.AddDnsName(dnsName);
-        }
-
-        sanBuilder.AddIpAddress(IPAddress.Loopback);
-        sanBuilder.AddIpAddress(IPAddress.Parse("127.0.0.1"));
-        if (IPAddress.TryParse(config.ListenHost, out var listenAddress)
-            && !IPAddress.IsLoopback(listenAddress)
-            && !listenAddress.Equals(IPAddress.Any)
-            && !listenAddress.Equals(IPAddress.IPv6Any))
-        {
-            sanBuilder.AddIpAddress(listenAddress);
-        }
-
-        request.CertificateExtensions.Add(sanBuilder.Build());
-
-        using var generated = request.CreateSelfSigned(DateTimeOffset.Now.AddDays(-1), DateTimeOffset.Now.AddYears(100));
-        var pfx = generated.Export(X509ContentType.Pfx, config.CertificatePassword);
-        File.WriteAllBytes(certPath, pfx);
-        logger.Info($"Generated development TLS certificate: {certPath}");
-        return new X509Certificate2(certPath, config.CertificatePassword);
-    }
-}

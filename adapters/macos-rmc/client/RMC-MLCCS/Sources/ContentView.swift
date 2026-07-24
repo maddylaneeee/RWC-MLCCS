@@ -93,11 +93,11 @@ private struct OverviewView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HeaderView(title: "RMC-MLCCS", subtitle: state.config.clientId)
+            HeaderView(title: "RMC-MLCCS", subtitle: state.config.deviceId)
 
             HStack(spacing: 12) {
                 StatusBadge(text: state.statusText, color: state.isConnected ? .green : (state.isRunning ? .orange : .secondary))
-                Text(state.config.serverUrl)
+                Text(state.config.brokerUrl)
                     .font(.callout.monospaced())
                     .textSelection(.enabled)
                     .foregroundStyle(.secondary)
@@ -249,13 +249,13 @@ private struct ConfigView: View {
         VStack(alignment: .leading, spacing: 18) {
             HeaderView(title: "配置", subtitle: "当前客户端配置")
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 12) {
-                ConfigRow("Server URL", state.config.serverUrl)
-                ConfigRow("Client ID", state.config.clientId)
+                ConfigRow("Broker URL", state.config.brokerUrl)
+                ConfigRow("Device ID", state.config.deviceId)
                 ConfigRow("Root Commands", state.config.allowRootCommands ? "enabled" : "disabled")
                 ConfigRow("Require sudo", state.config.requireSudoBeforeConnect ? "enabled" : "disabled")
                 ConfigRow("Reconnect Delay", "\(state.config.reconnectDelaySeconds)s")
                 ConfigRow("Command Timeout", "\(state.config.commandTimeoutSeconds)s")
-                ConfigRow("Pinned TLS", state.config.pinnedServerCertificateSha256.isEmpty ? "none" : state.config.pinnedServerCertificateSha256)
+                ConfigRow("TLS Validation", "system trust (strict)")
             }
             Spacer()
         }

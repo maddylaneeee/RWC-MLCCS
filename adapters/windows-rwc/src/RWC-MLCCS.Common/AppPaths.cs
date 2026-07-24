@@ -4,8 +4,6 @@ public static class AppPaths
 {
     public const string ProductName = "RWC-MLCCS";
 
-    public static string DefaultClientConfigUrl => BuildDefaults.ClientConfigUrl;
-
     public static string BaseDirectory => AppContext.BaseDirectory;
 
     public static string ClientDataDirectory
@@ -21,6 +19,8 @@ public static class AppPaths
     }
 
     public static string DefaultClientConfigPath => Path.Combine(ClientDataDirectory, "config.json");
+
+    public static string ProvisioningClientConfigPath => Path.Combine(BaseDirectory, "device.private.json");
 
     public static string PolicyAcceptedPath => Path.Combine(ClientDataDirectory, "policy.accepted");
 

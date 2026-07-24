@@ -112,7 +112,7 @@ final class AppState: ObservableObject {
         remoteClient = client
         isRunning = true
         statusText = "正在连接"
-        appendLog("开始连接 \(config.serverUrl)")
+        appendLog("开始连接 \(config.brokerUrl)")
         remoteTask = Task { [weak self, client] in
             await client.run()
             await MainActor.run {

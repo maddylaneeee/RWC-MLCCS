@@ -1,10 +1,11 @@
 {
-  "serverUrl": "wss://your-server.example:7580/link",
-  "sharedSecret": "change-this-shared-secret",
-  "clientId": "CLIENT-01",
+  "brokerUrl": "wss://lixinchen.ca/crc/v2/ws",
+  "deviceId": "CLIENT-01",
+  "keyId": "device-key-1",
+  "brokerAuthKey": "replace-with-32-byte-base64url-key",
+  "e2eeKey": "replace-with-32-byte-base64url-key",
   "allowLocalPowerShellFallback": true,
-  "allowInvalidServerCertificate": false,
-  "reconnectDelaySeconds": 5,
-  "commandCancelGraceSeconds": 3,
-  "configSourceUrl": "https://your-server.example/rwc-mlccs/config.json"
+  "reconnectDelaySeconds": 2,
+  "maxReconnectDelaySeconds": 60,
+  "commandCancelGraceSeconds": 3
 }

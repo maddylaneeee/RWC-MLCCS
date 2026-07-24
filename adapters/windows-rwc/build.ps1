@@ -62,7 +62,7 @@ foreach ($target in $ServerTargets) {
     Copy-Item -LiteralPath (Join-Path $Root "server.sample.json") -Destination (Join-Path $($target.Output) "server.json") -Force
 }
 
-Copy-Item -LiteralPath (Join-Path $Root "config.sample.json") -Destination (Join-Path $WebOut "config.json") -Force
+Copy-Item -LiteralPath (Join-Path $Root "public-bootstrap.json") -Destination (Join-Path $WebOut "config.json") -Force
 
 Write-Host "Client: $ClientOut"
 foreach ($target in $ServerTargets) {

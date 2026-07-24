@@ -3,60 +3,67 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_DIR="$ROOT/config"
-TLS_DIR="$CONFIG_DIR/tls"
-SECRET_FILE="$CONFIG_DIR/rmc.shared-secret"
+DEVICE_AUTH_FILE="$CONFIG_DIR/rmc.device-auth-key"
+OPERATOR_AUTH_FILE="$CONFIG_DIR/rmc.operator-auth-key"
+E2EE_FILE="$CONFIG_DIR/rmc.e2ee-key"
 SERVER_CONFIG="$CONFIG_DIR/server.private.json"
 CLIENT_CONFIG="$CONFIG_DIR/client.private.json"
 OPENSSL_BIN="${OPENSSL_BIN:-openssl}"
+BROKER_URL="${CRC_BROKER_URL:-wss://lixinchen.ca/crc/v2/ws}"
+DEVICE_ID="${CRC_DEVICE_ID:-$(scutil --get LocalHostName 2>/dev/null || hostname)-$(id -un)}"
+OPERATOR_ID="${CRC_OPERATOR_ID:-operator-$(scutil --get LocalHostName 2>/dev/null || hostname)}"
+DEVICE_KEY_ID="${CRC_DEVICE_KEY_ID:-${DEVICE_ID}-2026-01}"
+OPERATOR_KEY_ID="${CRC_OPERATOR_KEY_ID:-${OPERATOR_ID}-2026-01}"
 
-mkdir -p "$CONFIG_DIR" "$TLS_DIR"
+mkdir -p "$CONFIG_DIR"
+for key_file in "$DEVICE_AUTH_FILE" "$OPERATOR_AUTH_FILE" "$E2EE_FILE"; do
+  if [[ ! -f "$key_file" ]]; then
+    "$OPENSSL_BIN" rand -base64 32 | tr '+/' '-_' | tr -d '=\r\n' > "$key_file"
+    chmod 600 "$key_file"
+  fi
+done
 
-if [[ ! -f "$SECRET_FILE" ]]; then
-  "$OPENSSL_BIN" rand -base64 48 > "$SECRET_FILE"
-  chmod 600 "$SECRET_FILE"
-fi
+DEVICE_AUTH_KEY="$(tr -d '\r\n' < "$DEVICE_AUTH_FILE")"
+OPERATOR_AUTH_KEY="$(tr -d '\r\n' < "$OPERATOR_AUTH_FILE")"
+E2EE_KEY="$(tr -d '\r\n' < "$E2EE_FILE")"
 
-if [[ ! -f "$TLS_DIR/server.key" || ! -f "$TLS_DIR/server.crt" ]]; then
-  "$OPENSSL_BIN" req -x509 -newkey rsa:3072 -sha256 -days 3650 -nodes \
-    -keyout "$TLS_DIR/server.key" \
-    -out "$TLS_DIR/server.crt" \
-    -subj "/CN=lixinchen.ca" \
-    -addext "subjectAltName=DNS:lixinchen.ca,DNS:localhost,IP:127.0.0.1"
-  chmod 600 "$TLS_DIR/server.key"
-fi
-
-SECRET="$(tr -d '\r\n' < "$SECRET_FILE")"
-FINGERPRINT="$("$OPENSSL_BIN" x509 -in "$TLS_DIR/server.crt" -noout -fingerprint -sha256 | sed 's/^.*=//' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
-
-cat > "$SERVER_CONFIG" <<JSON
+if [[ ! -f "$SERVER_CONFIG" ]] || ! grep -q '"brokerUrl"' "$SERVER_CONFIG"; then
+  cat > "$SERVER_CONFIG" <<JSON
 {
-  "listenHost": "0.0.0.0",
-  "port": 5002,
-  "sharedSecret": "$SECRET",
-  "commandTimeoutSeconds": 600,
-  "tls": {
-    "enabled": true,
-    "certificatePath": "tls/server.crt",
-    "keyPath": "tls/server.key"
+  "brokerUrl": "$BROKER_URL",
+  "operatorId": "$OPERATOR_ID",
+  "keyId": "$OPERATOR_KEY_ID",
+  "brokerAuthKey": "$OPERATOR_AUTH_KEY",
+  "devices": {
+    "$DEVICE_ID": {
+      "e2eeKey": "$E2EE_KEY"
+    }
   },
+  "commandTimeoutSeconds": 600,
+  "reconnect": { "initialSeconds": 1, "maxSeconds": 60 },
+  "localApi": { "host": "127.0.0.1", "port": 5002, "tokenFile": "operator.token" },
   "logsDirectory": "logs"
 }
 JSON
-chmod 600 "$SERVER_CONFIG"
+  chmod 600 "$SERVER_CONFIG"
+fi
 
-cat > "$CLIENT_CONFIG" <<JSON
+if [[ ! -f "$CLIENT_CONFIG" ]] || ! grep -q '"brokerUrl"' "$CLIENT_CONFIG"; then
+  cat > "$CLIENT_CONFIG" <<JSON
 {
-  "serverUrl": "wss://lixinchen.ca:5002/link",
-  "sharedSecret": "$SECRET",
-  "clientId": "",
-  "allowInvalidServerCertificate": false,
-  "pinnedServerCertificateSha256": "$FINGERPRINT",
-  "reconnectDelaySeconds": 5,
+  "brokerUrl": "$BROKER_URL",
+  "deviceId": "$DEVICE_ID",
+  "keyId": "$DEVICE_KEY_ID",
+  "brokerAuthKey": "$DEVICE_AUTH_KEY",
+  "e2eeKey": "$E2EE_KEY",
+  "reconnectDelaySeconds": 1,
   "commandTimeoutSeconds": 600,
   "requireSudoBeforeConnect": true,
   "allowRootCommands": true
 }
 JSON
-chmod 600 "$CLIENT_CONFIG"
+  chmod 600 "$CLIENT_CONFIG"
+fi
 
-printf 'Private RMC config ready. Server port: 5002, TLS fingerprint: %s\n' "$FINGERPRINT"
+printf 'Private CRC v2 RMC config ready for device %s and operator %s.\n' "$DEVICE_ID" "$OPERATOR_ID"
+printf 'Register the generated auth key files with the broker; never commit them.\n'

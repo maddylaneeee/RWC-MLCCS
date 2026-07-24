@@ -1,12 +1,22 @@
 {
-  "listenHost": "0.0.0.0",
-  "port": 5002,
-  "sharedSecret": "change-this-shared-secret",
+  "brokerUrl": "wss://lixinchen.ca/crc/v2/ws",
+  "operatorId": "replace-with-operator-id",
+  "keyId": "replace-with-operator-key-id",
+  "brokerAuthKey": "replace-with-base64url-key",
+  "devices": {
+    "replace-with-device-id": {
+      "e2eeKey": "replace-with-base64url-key"
+    }
+  },
   "commandTimeoutSeconds": 600,
-  "tls": {
-    "enabled": true,
-    "certificatePath": "tls/server.crt",
-    "keyPath": "tls/server.key"
+  "reconnect": {
+    "initialSeconds": 1,
+    "maxSeconds": 60
+  },
+  "localApi": {
+    "host": "127.0.0.1",
+    "port": 5002,
+    "tokenFile": "operator.token"
   },
   "logsDirectory": "logs"
 }

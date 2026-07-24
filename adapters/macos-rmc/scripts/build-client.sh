@@ -10,7 +10,6 @@ MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 SOURCES_DIR="$ROOT/client/RMC-MLCCS/Sources"
 
-"$ROOT/scripts/generate-private-config.sh" >/dev/null
 trap 'rm -rf "$BUILD_ROOT"' EXIT
 
 clean_app_xattrs() {
@@ -22,7 +21,11 @@ clean_app_xattrs() {
 mkdir -p "$MACOS" "$RESOURCES"
 
 cp "$ROOT/client/RMC-MLCCS/Info.plist" "$CONTENTS/Info.plist"
-cp "$ROOT/config/client.private.json" "$RESOURCES/config.json"
+if [[ "${CRC_EMBED_PRIVATE_CONFIG:-0}" == "1" ]]; then
+  "$ROOT/scripts/generate-private-config.sh" >/dev/null
+  cp "$ROOT/config/client.private.json" "$RESOURCES/config.json"
+  echo "Warning: private device credentials were embedded because CRC_EMBED_PRIVATE_CONFIG=1." >&2
+fi
 
 SWIFT_SOURCES=()
 while IFS= read -r source_file; do

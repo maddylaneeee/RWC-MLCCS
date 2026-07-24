@@ -1,10 +1,10 @@
 {
-  "serverUrl": "wss://lixinchen.ca:5002/link",
-  "sharedSecret": "change-this-shared-secret",
-  "clientId": "",
-  "allowInvalidServerCertificate": false,
-  "pinnedServerCertificateSha256": "",
-  "reconnectDelaySeconds": 5,
+  "brokerUrl": "wss://lixinchen.ca/crc/v2/ws",
+  "deviceId": "replace-with-device-id",
+  "keyId": "replace-with-device-key-id",
+  "brokerAuthKey": "replace-with-base64url-key",
+  "e2eeKey": "replace-with-base64url-key",
+  "reconnectDelaySeconds": 1,
   "commandTimeoutSeconds": 600,
   "requireSudoBeforeConnect": true,
   "allowRootCommands": true

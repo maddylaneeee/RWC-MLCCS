@@ -169,15 +169,15 @@ internal sealed class InstallerWizardForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        var intro = CreateBodyLabel("请输入客户端初始化配置的 HTTPS 地址。安装时程序会下载该配置，并保存到本机 ProgramData。");
-        var label = new Label { Text = "配置 URL", Dock = DockStyle.Fill };
+        var intro = CreateBodyLabel("请选择由管理员安全提供的本地私有配置文件。长期认证密钥不会通过公开网页分发。");
+        var label = new Label { Text = "私有配置文件", Dock = DockStyle.Fill };
         _configUrlTextBox = new TextBox
         {
-            Text = ResolveInitialConfigSourceUrl(),
+            Text = ResolveInitialConfigSource(),
             Dock = DockStyle.Fill
         };
         _configUrlTextBox.TextChanged += (_, _) => UpdateNextButton();
-        var hint = CreateBodyLabel("示例：https://your-server.example/rwc-mlccs/config.json");
+        var hint = CreateBodyLabel(@"示例：D:\secure\device.private.json");
 
         layout.Controls.Add(intro, 0, 0);
         layout.Controls.Add(label, 0, 1);
@@ -217,7 +217,7 @@ internal sealed class InstallerWizardForm : Form
     private Control CreateInstallPage()
     {
         var panel = CreatePagePanel();
-        _statusLabel = CreateBodyLabel("点击“安装”后，程序会下载初始化配置并启动 RWC-MLCCS 后台连接。");
+        _statusLabel = CreateBodyLabel("点击“安装”后，程序会验证并安全保存私有配置，然后启动 RWC-MLCCS 后台连接。");
         _progressBar = new ProgressBar
         {
             Dock = DockStyle.Bottom,
@@ -251,9 +251,9 @@ internal sealed class InstallerWizardForm : Form
             SetProgress(10, "正在记录用户许可...");
             File.WriteAllText(AppPaths.PolicyAcceptedPath, $"acceptedAt={DateTimeOffset.Now:O}{Environment.NewLine}");
 
-            SetProgress(35, "正在下载初始化配置...");
-            var configSourceUrl = _configUrlTextBox?.Text.Trim() ?? "";
-            var config = await InstallerBootstrapper.EnsureClientConfigAsync(configSourceUrl, _logger, CancellationToken.None);
+            SetProgress(35, "正在验证本地私有配置...");
+            var configSource = _configUrlTextBox?.Text.Trim() ?? "";
+            var config = await InstallerBootstrapper.EnsureClientConfigAsync(configSource, _logger, CancellationToken.None);
 
             SetProgress(70, "正在启动后台连接...");
             _runCts = new CancellationTokenSource();
@@ -337,64 +337,45 @@ internal sealed class InstallerWizardForm : Form
         };
     }
 
-    private static string ResolveInitialConfigSourceUrl()
+    private static string ResolveInitialConfigSource()
     {
-        if (!File.Exists(AppPaths.DefaultClientConfigPath))
-        {
-            return AppPaths.DefaultClientConfigUrl;
-        }
-
-        try
-        {
-            var existing = ClientConfig.LoadOrCreate(AppPaths.DefaultClientConfigPath);
-            return string.IsNullOrWhiteSpace(existing.ConfigSourceUrl)
-                ? AppPaths.DefaultClientConfigUrl
-                : existing.ConfigSourceUrl;
-        }
-        catch
-        {
-            return AppPaths.DefaultClientConfigUrl;
-        }
+        if (File.Exists(AppPaths.DefaultClientConfigPath)) return AppPaths.DefaultClientConfigPath;
+        return AppPaths.ProvisioningClientConfigPath;
     }
 }
 
 internal static class InstallerBootstrapper
 {
-    public static async Task<ClientConfig> EnsureClientConfigAsync(string configSourceUrl, FileLogger logger, CancellationToken cancellationToken)
+    public static async Task<ClientConfig> EnsureClientConfigAsync(string configSource, FileLogger logger, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(AppPaths.ClientDataDirectory);
 
-        if (string.IsNullOrWhiteSpace(configSourceUrl) ||
-            !Uri.TryCreate(configSourceUrl, UriKind.Absolute, out var sourceUri) ||
-            sourceUri.Scheme != Uri.UriSchemeHttps)
+        if (string.IsNullOrWhiteSpace(configSource))
         {
-            throw new InvalidDataException("请输入有效的 HTTPS 配置地址。");
+            if (File.Exists(AppPaths.DefaultClientConfigPath))
+                return ClientConfig.LoadOrCreate(AppPaths.DefaultClientConfigPath);
+            throw new InvalidDataException("请选择本地私有配置文件。");
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
+        var sourcePath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(configSource));
+        if (!File.Exists(sourcePath)) throw new FileNotFoundException("找不到私有配置文件。", sourcePath);
+
+        var provisioned = ClientConfig.LoadOrCreate(sourcePath);
+        provisioned.Validate();
+        var candidatePath = Path.Combine(AppPaths.ClientDataDirectory, $"config.{Guid.NewGuid():N}.tmp");
         try
         {
-            using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-            var json = await httpClient.GetStringAsync(sourceUri, cancellationToken);
-            var candidatePath = Path.Combine(AppPaths.ClientDataDirectory, "config.download");
-            await File.WriteAllTextAsync(candidatePath, json, cancellationToken);
-
-            var downloaded = ClientConfig.LoadOrCreate(candidatePath);
-            downloaded.ConfigSourceUrl = sourceUri.ToString();
-            JsonConfig.Write(candidatePath, downloaded);
-            if (downloaded.SharedSecret == "change-this-shared-secret")
-            {
-                throw new InvalidDataException("Downloaded config still uses the placeholder shared secret.");
-            }
-
-            File.Copy(candidatePath, AppPaths.DefaultClientConfigPath, overwrite: true);
-            File.Delete(candidatePath);
-            logger.Info($"Downloaded client config from {sourceUri}.");
+            JsonConfig.Write(candidatePath, provisioned);
+            File.Move(candidatePath, AppPaths.DefaultClientConfigPath, overwrite: true);
+            JsonConfig.RestrictPrivateFile(AppPaths.DefaultClientConfigPath);
         }
-        catch (Exception ex) when (File.Exists(AppPaths.DefaultClientConfigPath))
+        finally
         {
-            logger.Error("Config download failed; using existing local config.", ex);
+            if (File.Exists(candidatePath)) File.Delete(candidatePath);
         }
-
+        logger.Info("Provisioned client configuration from a local administrator-supplied file.");
+        await Task.CompletedTask;
         return ClientConfig.LoadOrCreate(AppPaths.DefaultClientConfigPath);
     }
 }
