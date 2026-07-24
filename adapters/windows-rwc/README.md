@@ -139,4 +139,11 @@ The previous local-file workflow remains available: select a local
 `%ProgramData%\RWC-MLCCS`. Closing the program cancels the outbound connection
 and child PowerShell process.
 
+After installation, click **更换配置…** on the completion page to stop the
+current connection and return to the configuration page. You can enter new
+public/private URLs or use **浏览…** to import another local
+`device.private.json`. A new connection starts only after the old client has
+fully stopped and the replacement config has passed validation and atomic
+restricted-file installation.
+
 RWC-MLCCS is MIT licensed. See [LICENSE](LICENSE).

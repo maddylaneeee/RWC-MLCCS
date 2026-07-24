@@ -97,6 +97,25 @@ test("fails closed when a device identity already exists", async () => {
   );
 });
 
+test("creates a macOS client config in the same authenticated envelope", async () => {
+  const fx = await fixture();
+  const out = join(fx.dir, "mac-transaction");
+  const result = await provisionRwcDevice({
+    deviceId: "MAC-NEW",
+    clientPlatform: "macos",
+    brokerConfigPath: fx.brokerConfigPath,
+    operatorConfigPath: fx.operatorConfigPath,
+    outputDirectory: out,
+  });
+  const device = JSON.parse(await readFile(result.localFallbackPath, "utf8"));
+  assert.equal(device.deviceId, "MAC-NEW");
+  assert.equal(device.requireSudoBeforeConnect, true);
+  assert.equal(device.allowRootCommands, true);
+  assert.equal(device.commandTimeoutSeconds, 600);
+  assert.equal("allowLocalPowerShellFallback" in device, false);
+  assert.equal(JSON.parse(await readFile(result.receiptPath, "utf8")).clientPlatform, "macos");
+});
+
 test("finalizes an encrypted temporary FileShare URL with the transaction fragment", async () => {
   const fx = await fixture();
   const result = await provisionRwcDevice({

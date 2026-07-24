@@ -27,9 +27,33 @@ bash scripts/generate-private-config.sh
 
 Register the generated device and operator authentication keys/key IDs in the broker key registry. Keep `rmc.e2ee-key` only on the device and authorized operator hosts. All private files are ignored by Git.
 
-The normal client build does not embed private credentials. Provision
-`~/Library/Application Support/RMC-MLCCS/config.json` through a secure channel
-before launching the app. `CRC_EMBED_PRIVATE_CONFIG=1` exists only for tightly
+The normal client build does not embed private credentials. The app's
+Configuration page accepts either:
+
+1. `https://lixinchen.ca/rwc-mlccs/config.json` plus a complete encrypted
+   FileShare provisioning URL ending in `#crc-key=...`; or
+2. a local macOS `device.private.json`.
+
+The private URL is masked, is not logged or persisted, and is decrypted in
+memory. The validated private config is atomically installed with mode `0600`
+under `~/Library/Application Support/RMC-MLCCS/config.json`. The same page can
+replace the configuration after installation; an active connection is stopped
+before the file is replaced, then restarted with the new identity.
+
+Generate a macOS-shaped device transaction with:
+
+```bash
+node ../../scripts/provision-rwc-device.mjs \
+  --platform macos \
+  --device-id MAC-01 \
+  --broker-config ../../broker/config/private.json \
+  --operator-config config/server.private.json \
+  --out /secure/new-transaction-directory
+```
+
+Upload only the generated encrypted random-name payload. FileShare temporary
+URLs are not truly single-read; the complete URL including its fragment is a
+secret. `CRC_EMBED_PRIVATE_CONFIG=1` remains available only for tightly
 controlled one-off deployments because anyone who can copy that app bundle can
 extract its device credentials.
 
@@ -50,6 +74,10 @@ artifacts/server/rmc-server.mjs
 artifacts/server/protocol-v2.mjs
 artifacts/server/server.private.json
 ```
+
+`artifacts/client/build-manifest.json` records the Git commit, scoped dirty
+state, source aggregate hash, binary hash, target, and signing class for the
+latest local app build.
 
 ## Run the operator
 

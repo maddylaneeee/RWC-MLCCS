@@ -37,6 +37,7 @@ internal sealed class InstallerWizardForm : Form
     private CancellationTokenSource? _runCts;
     private Task? _runTask;
     private bool _closing;
+    private bool _reconfiguring;
 
     public InstallerWizardForm()
     {
@@ -103,7 +104,7 @@ internal sealed class InstallerWizardForm : Form
         _pageIndex = index;
         _content.Controls.Clear();
         _content.Controls.Add(_pages[index]());
-        _backButton.Enabled = index > 0 && index < 4;
+        _backButton.Enabled = index > 0 && index < 4 && !(_reconfiguring && index == 2);
         _cancelButton.Enabled = true;
         _cancelButton.Text = index == 4 ? "关闭" : "取消";
 
@@ -198,10 +199,28 @@ internal sealed class InstallerWizardForm : Form
         var privateLabel = new Label { Text = "device.private.json URL 或本地路径", Dock = DockStyle.Fill };
         _privateConfigSourceTextBox = new TextBox
         {
-            Text = ResolveInitialPrivateConfigSource(),
+            Text = _reconfiguring ? "" : ResolveInitialPrivateConfigSource(),
             Dock = DockStyle.Fill,
             UseSystemPasswordChar = true
         };
+        var privateSourcePanel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = Padding.Empty
+        };
+        privateSourcePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        privateSourcePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
+        var browseButton = new Button
+        {
+            Text = "浏览…",
+            Dock = DockStyle.Fill,
+            Margin = new Padding(6, 0, 0, 0)
+        };
+        browseButton.Click += (_, _) => SelectLocalPrivateConfig();
+        privateSourcePanel.Controls.Add(_privateConfigSourceTextBox, 0, 0);
+        privateSourcePanel.Controls.Add(browseButton, 1, 0);
         _showPrivateUrlCheckBox = new CheckBox
         {
             Text = "显示私有配置 URL",
@@ -219,7 +238,7 @@ internal sealed class InstallerWizardForm : Form
         layout.Controls.Add(publicLabel, 0, 1);
         layout.Controls.Add(_publicConfigUrlTextBox, 0, 2);
         layout.Controls.Add(privateLabel, 0, 3);
-        layout.Controls.Add(_privateConfigSourceTextBox, 0, 4);
+        layout.Controls.Add(privateSourcePanel, 0, 4);
         layout.Controls.Add(_showPrivateUrlCheckBox, 0, 5);
         layout.Controls.Add(hint, 0, 6);
         panel.Controls.Add(layout);
@@ -275,8 +294,16 @@ internal sealed class InstallerWizardForm : Form
     private Control CreateFinishPage()
     {
         var panel = CreatePagePanel();
+        var replaceButton = new Button
+        {
+            Text = "更换配置…",
+            Dock = DockStyle.Bottom,
+            Height = 38
+        };
+        replaceButton.Click += async (_, _) => await BeginReconfigurationAsync(replaceButton);
         panel.Controls.Add(CreateBodyLabel(
-            "RWC-MLCCS 已完成初始化，正在等待服务端连接。\r\n\r\n保持此窗口打开时，后台连接会持续生效。关闭本程序将断开连接并停止本工具创建的执行进程。"));
+            "RWC-MLCCS 已完成初始化，正在等待服务端连接。\r\n\r\n保持此窗口打开时，后台连接会持续生效。关闭本程序将断开连接并停止本工具创建的执行进程。\r\n\r\n如需更换设备身份或密钥，请点击“更换配置”。当前连接会先安全停止。"));
+        panel.Controls.Add(replaceButton);
         return panel;
     }
 
@@ -307,6 +334,7 @@ internal sealed class InstallerWizardForm : Form
             SetProgress(100, "安装完成，正在等待服务端连接...");
             await Task.Delay(500, _installCts.Token);
             _installCts.Token.ThrowIfCancellationRequested();
+            _reconfiguring = false;
             ShowPage(4);
         }
         catch (OperationCanceledException)
@@ -376,35 +404,81 @@ internal sealed class InstallerWizardForm : Form
             {
             }
         }
-        await StopServiceAsync();
+        await StopServiceAsync(requireCompletion: false);
     }
 
-    private async Task StopServiceAsync()
+    private async Task<bool> StopServiceAsync(bool requireCompletion)
     {
         if (_runCts is null || _runTask is null)
         {
-            return;
+            return true;
         }
 
+        var runCts = _runCts;
+        var runTask = _runTask;
         _logger.Info("Client shutdown requested.");
-        _runCts.Cancel();
+        runCts.Cancel();
         try
         {
-            await _runTask.WaitAsync(TimeSpan.FromSeconds(8));
+            await runTask.WaitAsync(TimeSpan.FromSeconds(8));
         }
         catch (TimeoutException)
         {
-            _logger.Info("Client shutdown timed out; process will exit.");
+            _logger.Info(requireCompletion
+                ? "Client shutdown timed out; configuration replacement was not started."
+                : "Client shutdown timed out; process will exit.");
+            return false;
         }
         catch (OperationCanceledException)
         {
         }
-        finally
+
+        if (ReferenceEquals(_runTask, runTask))
         {
-            _runCts.Dispose();
+            runCts.Dispose();
             _runCts = null;
             _runTask = null;
         }
+        return true;
+    }
+
+    private void SelectLocalPrivateConfig()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "选择 device.private.json",
+            Filter = "device.private.json|device.private.json|JSON 文件 (*.json)|*.json|所有文件 (*.*)|*.*",
+            CheckFileExists = true,
+            CheckPathExists = true,
+            Multiselect = false,
+            RestoreDirectory = true
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK || _privateConfigSourceTextBox is null) return;
+        _privateConfigSourceTextBox.Text = dialog.FileName;
+        _privateConfigSourceTextBox.SelectionStart = _privateConfigSourceTextBox.TextLength;
+    }
+
+    private async Task BeginReconfigurationAsync(Button sourceButton)
+    {
+        if (_closing || _installTask is not null) return;
+        sourceButton.Enabled = false;
+        _logger.Info("Configuration replacement requested.");
+        var stopped = await StopServiceAsync(requireCompletion: true);
+        if (_closing || IsDisposed) return;
+        if (!stopped)
+        {
+            sourceButton.Enabled = true;
+            MessageBox.Show(
+                this,
+                "当前连接未能在安全时限内完全停止，因此没有开始更换配置。请稍后重试。",
+                "无法更换配置",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        _reconfiguring = true;
+        ShowPage(2);
     }
 
     private static Panel CreatePagePanel()

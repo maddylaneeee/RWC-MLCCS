@@ -1,5 +1,7 @@
 import Combine
 import Foundation
+import AppKit
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppState: ObservableObject {
@@ -13,6 +15,12 @@ final class AppState: ObservableObject {
     @Published var isConnected = false
     @Published var statusText = "未连接"
     @Published var logs: [String] = []
+    @Published var publicConfigURL = UserDefaults.standard.string(
+        forKey: "rmc.publicConfigURL"
+    ) ?? ClientConfig.publicBootstrapURL
+    @Published var privateConfigURL = ""
+    @Published var configurationMessage = ""
+    @Published var isApplyingConfiguration = false
 
     private var sudoPassword: String?
     private var remoteClient: RemoteClient?
@@ -132,6 +140,109 @@ final class AppState: ObservableObject {
         isConnected = false
         statusText = "已停止"
         appendLog("连接已停止")
+    }
+
+    func applyRemoteConfiguration() {
+        guard !isApplyingConfiguration else { return }
+        let publicURL = publicConfigURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let privateURL = privateConfigURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !privateURL.isEmpty else {
+            configurationMessage = "请输入带 #crc-key 的加密私有配置 URL"
+            return
+        }
+        isApplyingConfiguration = true
+        configurationMessage = "正在安全下载并验证配置…"
+        Task {
+            do {
+                let candidate = try await ProvisioningCodec.downloadAndDecrypt(
+                    publicURLText: publicURL,
+                    privateURLText: privateURL
+                )
+                try await installAndActivate(candidate, publicURL: publicURL)
+                privateConfigURL = ""
+                configurationMessage = "配置已安全应用"
+            } catch {
+                configurationMessage = "配置应用失败：\(safeConfigurationError(error))"
+                appendLog("配置应用失败")
+            }
+            isApplyingConfiguration = false
+        }
+    }
+
+    func importLocalConfiguration() {
+        guard !isApplyingConfiguration else { return }
+        let panel = NSOpenPanel()
+        panel.title = "选择 device.private.json"
+        panel.prompt = "导入"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.resolvesAliases = false
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        isApplyingConfiguration = true
+        configurationMessage = "正在验证本地私有配置…"
+        Task {
+            do {
+                let candidate = try ProvisioningCodec.loadLocalConfig(from: url)
+                try await installAndActivate(candidate, publicURL: nil)
+                privateConfigURL = ""
+                configurationMessage = "本地配置已安全导入"
+            } catch {
+                configurationMessage = "配置导入失败：\(safeConfigurationError(error))"
+                appendLog("本地配置导入失败")
+            }
+            isApplyingConfiguration = false
+        }
+    }
+
+    private func installAndActivate(_ candidate: ClientConfig, publicURL: String?) async throws {
+        let shouldRestart = isRunning
+        if shouldRestart {
+            await stopForConfigurationChange()
+        }
+        do {
+            try ClientConfig.install(candidate)
+            config = candidate.normalized()
+            if let publicURL {
+                publicConfigURL = publicURL
+                UserDefaults.standard.set(publicURL, forKey: "rmc.publicConfigURL")
+            }
+            appendLog("已安装新的私有配置")
+            if shouldRestart {
+                start()
+            }
+        } catch {
+            if shouldRestart {
+                start()
+            }
+            throw error
+        }
+    }
+
+    private func stopForConfigurationChange() async {
+        let existingTask = remoteTask
+        remoteClient?.stop()
+        existingTask?.cancel()
+        if let existingTask {
+            await existingTask.value
+        }
+        remoteClient = nil
+        remoteTask = nil
+        isRunning = false
+        isConnected = false
+        statusText = "正在重新配置"
+    }
+
+    private func safeConfigurationError(_ error: Error) -> String {
+        if let rmc = error as? RMCError {
+            return rmc.localizedDescription
+        }
+        if error is DecodingError {
+            return "配置 JSON 格式无效"
+        }
+        return "无法验证或保存配置"
     }
 
     func appendLog(_ message: String) {

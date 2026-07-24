@@ -36,9 +36,12 @@ Build instructions and platform requirements are documented in each adapter dire
 - [RMC build and usage](adapters/macos-rmc/README.md)
 - [RWC build and usage](adapters/windows-rwc/README.md)
 
-For one-device RWC provisioning, use `scripts/provision-rwc-device.mjs`.
-FileShare delivery uses an encrypted payload and a URL-fragment content key;
-plaintext device credentials are never uploaded.
+For one-device provisioning, use `scripts/provision-rwc-device.mjs` (Windows is
+the default; pass `--platform macos` for RMC). FileShare delivery uses an
+encrypted payload and a URL-fragment content key; plaintext device credentials
+are never uploaded. Both device apps can later replace their installed
+configuration from the UI using new URLs or a new local
+`device.private.json`.
 
 ## License
 

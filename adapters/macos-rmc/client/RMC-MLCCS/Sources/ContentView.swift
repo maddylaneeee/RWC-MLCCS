@@ -244,6 +244,7 @@ private struct LogsView: View {
 
 private struct ConfigView: View {
     @EnvironmentObject private var state: AppState
+    @State private var showPrivateURL = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -256,6 +257,75 @@ private struct ConfigView: View {
                 ConfigRow("Reconnect Delay", "\(state.config.reconnectDelaySeconds)s")
                 ConfigRow("Command Timeout", "\(state.config.commandTimeoutSeconds)s")
                 ConfigRow("TLS Validation", "system trust (strict)")
+            }
+            Divider()
+            Text("更换设备配置")
+                .font(.headline)
+            Text("可重新输入公开配置与加密私有 URL，或导入管理员提供的本地 device.private.json。")
+                .foregroundStyle(.secondary)
+
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 12) {
+                GridRow {
+                    Text("公开 config URL")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 150, alignment: .leading)
+                    TextField("https://lixinchen.ca/…/config.json", text: $state.publicConfigURL)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(state.isApplyingConfiguration)
+                }
+                GridRow {
+                    Text("加密私有 URL")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 150, alignment: .leading)
+                    Group {
+                        if showPrivateURL {
+                            TextField(
+                                "https://lixinchen.ca/tempfileshare/…#crc-key=…",
+                                text: $state.privateConfigURL
+                            )
+                        } else {
+                            SecureField(
+                                "https://lixinchen.ca/tempfileshare/…#crc-key=…",
+                                text: $state.privateConfigURL
+                            )
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(state.isApplyingConfiguration)
+                }
+            }
+
+            HStack(spacing: 12) {
+                Toggle("显示私有 URL", isOn: $showPrivateURL)
+                    .toggleStyle(.checkbox)
+                    .disabled(state.isApplyingConfiguration)
+                Button {
+                    state.applyRemoteConfiguration()
+                } label: {
+                    Label("应用 URL 配置", systemImage: "arrow.down.doc")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(state.isApplyingConfiguration || state.privateConfigURL.isEmpty)
+                Button {
+                    state.importLocalConfiguration()
+                } label: {
+                    Label("导入本地配置", systemImage: "folder")
+                }
+                .disabled(state.isApplyingConfiguration)
+                if state.isApplyingConfiguration {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+            Text("私有 URL 默认隐藏且不会写入日志；配置验证成功后将以 0600 权限原子保存。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if !state.configurationMessage.isEmpty {
+                Text(state.configurationMessage)
+                    .font(.callout)
+                    .foregroundStyle(
+                        state.configurationMessage.contains("失败") ? .red : .secondary
+                    )
             }
             Spacer()
         }

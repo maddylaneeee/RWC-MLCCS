@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FINAL_APP="$ROOT/artifacts/client/RMC-MLCCS.app"
+FINAL_MANIFEST="$ROOT/artifacts/client/build-manifest.json"
 BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/rmc-client-build.XXXXXX")"
 APP="$BUILD_ROOT/RMC-MLCCS.app"
 CONTENTS="$APP/Contents"
@@ -56,4 +57,29 @@ mkdir -p "$(dirname "$FINAL_APP")"
 ditto --noextattr --noqtn "$APP" "$FINAL_APP"
 APP="$FINAL_APP"
 clean_app_xattrs
+codesign --verify --deep --strict --verbose=2 "$FINAL_APP"
+
+REPO_ROOT="$(cd "$ROOT/../.." && pwd)"
+GIT_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || printf 'unknown')"
+if [[ -n "$(git -C "$REPO_ROOT" status --porcelain -- \
+  adapters/macos-rmc/client/RMC-MLCCS \
+  adapters/macos-rmc/scripts/build-client.sh 2>/dev/null)" ]]; then
+  GIT_DIRTY=true
+else
+  GIT_DIRTY=false
+fi
+SOURCE_SHA="$(
+  {
+    find "$ROOT/client/RMC-MLCCS" -type f -print
+    printf '%s\n' "$ROOT/scripts/build-client.sh"
+  } | LC_ALL=C sort | while IFS= read -r source_file; do
+    shasum -a 256 "$source_file"
+  done | shasum -a 256 | awk '{print $1}'
+)"
+BINARY_SHA="$(shasum -a 256 "$FINAL_APP/Contents/MacOS/RMC-MLCCS" | awk '{print $1}')"
+BUILT_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+printf '{\n  "format": "crc-macos-build-manifest-v1",\n  "gitCommit": "%s",\n  "gitDirty": %s,\n  "sourceAggregateSha256": "%s",\n  "binarySha256": "%s",\n  "target": "arm64-apple-macosx26.0",\n  "signing": "adhoc",\n  "builtAt": "%s"\n}\n' \
+  "$GIT_COMMIT" "$GIT_DIRTY" "$SOURCE_SHA" "$BINARY_SHA" "$BUILT_AT" > "$FINAL_MANIFEST"
+
 printf 'Client app: %s\n' "$FINAL_APP"
+printf 'Build manifest: %s\n' "$FINAL_MANIFEST"

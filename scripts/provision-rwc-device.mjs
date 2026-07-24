@@ -64,11 +64,15 @@ function assertCanonicalKey(value, name) {
 export async function provisionRwcDevice({
   deviceId,
   keyId,
+  clientPlatform = "windows",
   brokerConfigPath,
   operatorConfigPath,
   outputDirectory,
 }) {
   if (!ID_PATTERN.test(deviceId)) throw new Error("deviceId is invalid");
+  if (!["windows", "macos"].includes(clientPlatform)) {
+    throw new Error("clientPlatform must be windows or macos");
+  }
   const effectiveKeyId = keyId || `device-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${base64url(randomBytes(5))}`;
   if (!ID_PATTERN.test(effectiveKeyId)) throw new Error("keyId is invalid");
 
@@ -108,17 +112,28 @@ export async function provisionRwcDevice({
   const e2eeKey = base64url(randomBytes(32));
   const contentKey = randomBytes(32);
   const nonce = randomBytes(12);
-  const deviceConfig = {
+  const sharedDeviceConfig = {
     brokerUrl: operator.brokerUrl,
     deviceId,
     keyId: effectiveKeyId,
     brokerAuthKey,
     e2eeKey,
-    allowLocalPowerShellFallback: true,
-    reconnectDelaySeconds: 2,
-    maxReconnectDelaySeconds: 60,
-    commandCancelGraceSeconds: 3,
   };
+  const deviceConfig = clientPlatform === "macos"
+    ? {
+        ...sharedDeviceConfig,
+        reconnectDelaySeconds: 1,
+        commandTimeoutSeconds: 600,
+        requireSudoBeforeConnect: true,
+        allowRootCommands: true,
+      }
+    : {
+        ...sharedDeviceConfig,
+        allowLocalPowerShellFallback: true,
+        reconnectDelaySeconds: 2,
+        maxReconnectDelaySeconds: 60,
+        commandCancelGraceSeconds: 3,
+      };
   const plaintext = Buffer.from(stableJson(deviceConfig), "utf8");
   const cipher = createCipheriv("aes-256-gcm", contentKey, nonce);
   cipher.setAAD(AAD);
@@ -168,6 +183,7 @@ export async function provisionRwcDevice({
     format: "crc-device-provisioning-receipt-v1",
     transactionId: randomUUID(),
     createdAt: new Date().toISOString(),
+    clientPlatform,
     deviceId,
     keyId: effectiveKeyId,
     operatorId: operator.operatorId,
@@ -224,6 +240,7 @@ async function main() {
   const result = await provisionRwcDevice({
     deviceId: args["device-id"],
     keyId: args["key-id"],
+    clientPlatform: args.platform || "windows",
     brokerConfigPath: args["broker-config"],
     operatorConfigPath: args["operator-config"],
     outputDirectory: args.out,
