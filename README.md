@@ -36,6 +36,10 @@ Build instructions and platform requirements are documented in each adapter dire
 - [RMC build and usage](adapters/macos-rmc/README.md)
 - [RWC build and usage](adapters/windows-rwc/README.md)
 
+For one-device RWC provisioning, use `scripts/provision-rwc-device.mjs`.
+FileShare delivery uses an encrypted payload and a URL-fragment content key;
+plaintext device credentials are never uploaded.
+
 ## License
 
 CRC-MLCCS is released under the MIT License. See [LICENSE](LICENSE).

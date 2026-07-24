@@ -9,7 +9,7 @@
   "scripts": {
     "broker": "node broker/src/main.mjs",
     "config:init": "node broker/scripts/generate-private-config.mjs",
-    "test": "node --test broker/test/*.test.mjs protocol/v2/test/*.test.mjs"
+    "test": "node --test broker/test/*.test.mjs protocol/v2/test/*.test.mjs adapters/windows-rwc/test/*.test.mjs"
   },
   "dependencies": {
     "ws": "^8.18.3"

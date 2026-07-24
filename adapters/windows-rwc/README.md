@@ -98,12 +98,44 @@ The Windows device continues to support the existing `tool ...` commands for
 diagnostics, search, Python, file inspection, downloads, FileShare, and
 clipboard access.
 
+## Provision one Windows device
+
+Codex can create a single-device provisioning transaction with:
+
+```bash
+node scripts/provision-rwc-device.mjs \
+  --device-id CLIENT-01 \
+  --broker-config broker/config/private.json \
+  --operator-config adapters/windows-rwc/config/operator.private.json \
+  --out /secure/transaction-directory
+```
+
+The transaction contains updated broker/operator candidates, a mode-0600 local
+`device.private.json` fallback, and an AES-256-GCM encrypted FileShare payload.
+The broker candidate contains the device authentication key but never the E2EE
+key; the operator candidate contains the E2EE key but never the device
+authentication key.
+
+FileShare's temporary tier is not a true burn-after-reading service. Upload only
+the encrypted random-name payload and append the generated `#crc-key=...` URL
+fragment. HTTP does not send that fragment to FileShare or IIS. Never upload the
+plaintext fallback.
+
 ## Windows device
 
-Run `RWC-MLCCS.Client.exe`, approve UAC, accept the policy, and select the local
-`device.private.json` supplied by the administrator through a secure channel.
-The client validates it, copies it under an Administrators/SYSTEM-only ACL, and
-never downloads long-term secrets from a public URL. Runtime state is stored under
+Run `RWC-MLCCS.Client.exe`, approve UAC, and accept the policy. Enter:
+
+1. `https://lixinchen.ca/rwc-mlccs/config.json`
+2. the complete encrypted FileShare provisioning URL supplied by Codex
+
+The private URL field is masked. The client requires certificate-validated
+HTTPS, restricts the private file to the FileShare temporary route, downloads
+with strict size and redirect limits, authenticates and decrypts it in memory,
+checks that its broker matches the public bootstrap, and atomically saves only
+the validated plaintext under an Administrators/SYSTEM-only ACL.
+
+The previous local-file workflow remains available: select a local
+`device.private.json` in the second field. Runtime state is stored under
 `%ProgramData%\RWC-MLCCS`. Closing the program cancels the outbound connection
 and child PowerShell process.
 

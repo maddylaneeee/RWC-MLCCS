@@ -1,6 +1,7 @@
 {
   "protocolVersion": 2,
   "brokerUrl": "wss://lixinchen.ca/crc/v2/ws",
-  "provisioning": "local-private-config-required",
-  "containsSecrets": false
+  "provisioning": "local-or-encrypted-url-private-config",
+  "containsSecrets": false,
+  "privateConfigFormat": "crc-device-provisioning-v1"
 }

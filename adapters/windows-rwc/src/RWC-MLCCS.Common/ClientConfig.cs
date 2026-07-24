@@ -22,11 +22,24 @@ public sealed class ClientConfig
     {
         if (!Uri.TryCreate(BrokerUrl, UriKind.Absolute, out var uri) || uri.Scheme != "wss")
             throw new InvalidDataException("brokerUrl must be an absolute wss:// URL.");
-        if (string.IsNullOrWhiteSpace(DeviceId) || string.IsNullOrWhiteSpace(KeyId))
+        if (!BrokerId.IsMatch(DeviceId) || !BrokerId.IsMatch(KeyId))
             throw new InvalidDataException("deviceId and keyId are required.");
         Base64Url.Decode(BrokerAuthKey, 32);
         Base64Url.Decode(E2eeKey, 32);
+        if (ReconnectDelaySeconds is < 1 or > 300 ||
+            MaxReconnectDelaySeconds < ReconnectDelaySeconds ||
+            MaxReconnectDelaySeconds > 3600 ||
+            CommandCancelGraceSeconds is < 1 or > 60)
+            throw new InvalidDataException("Reconnect or cancellation settings are invalid.");
     }
+}
+
+internal static partial class BrokerId
+{
+    [System.Text.RegularExpressions.GeneratedRegex("^[A-Za-z0-9._:@-]{1,128}$")]
+    private static partial System.Text.RegularExpressions.Regex Pattern();
+
+    public static bool IsMatch(string? value) => value is not null && Pattern().IsMatch(value);
 }
 
 public sealed class OperatorDeviceConfig

@@ -28,7 +28,13 @@ foreach ($path in @($ClientOut, $WebOut) + ($ServerTargets | ForEach-Object { $_
     New-Item -ItemType Directory -Force -Path $path | Out-Null
 }
 
-Invoke-DotNet @("test", (Join-Path $Root "RWC-MLCCS.sln"), "-c", "Release")
+Invoke-DotNet @(
+    "test",
+    (Join-Path $Root "RWC-MLCCS.sln"),
+    "-c", "Release",
+    "-p:EnableWindowsTargeting=true",
+    "-p:RollForward=Major"
+)
 
 Invoke-DotNet @(
     "publish",
@@ -41,6 +47,7 @@ Invoke-DotNet @(
     "-p:EnableCompressionInSingleFile=true",
     "-p:DebugType=None",
     "-p:DebugSymbols=false",
+    "-p:EnableWindowsTargeting=true",
     "-o", $ClientOut
 )
 

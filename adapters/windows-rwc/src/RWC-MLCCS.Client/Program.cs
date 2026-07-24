@@ -29,9 +29,14 @@ internal sealed class InstallerWizardForm : Form
     private CheckBox? _acceptCheckBox;
     private ProgressBar? _progressBar;
     private Label? _statusLabel;
-    private TextBox? _configUrlTextBox;
+    private TextBox? _publicConfigUrlTextBox;
+    private TextBox? _privateConfigSourceTextBox;
+    private CheckBox? _showPrivateUrlCheckBox;
+    private CancellationTokenSource? _installCts;
+    private Task? _installTask;
     private CancellationTokenSource? _runCts;
     private Task? _runTask;
+    private bool _closing;
 
     public InstallerWizardForm()
     {
@@ -80,14 +85,15 @@ internal sealed class InstallerWizardForm : Form
     protected override async void OnFormClosing(FormClosingEventArgs e)
     {
         base.OnFormClosing(e);
-        if (_runTask is null)
+        if (_closing || (_installTask is null && _runTask is null))
         {
             return;
         }
 
         e.Cancel = true;
+        _closing = true;
         Enabled = false;
-        await StopServiceAsync();
+        await StopAllAsync();
         e.Cancel = false;
         Close();
     }
@@ -117,7 +123,16 @@ internal sealed class InstallerWizardForm : Form
     {
         if (_pageIndex == 3)
         {
-            await InstallAndRunAsync();
+            var installTask = InstallAndRunAsync();
+            _installTask = installTask;
+            try
+            {
+                await installTask;
+            }
+            finally
+            {
+                if (ReferenceEquals(_installTask, installTask)) _installTask = null;
+            }
             return;
         }
 
@@ -162,27 +177,51 @@ internal sealed class InstallerWizardForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4
+            RowCount = 7
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        var intro = CreateBodyLabel("请选择由管理员安全提供的本地私有配置文件。长期认证密钥不会通过公开网页分发。");
-        var label = new Label { Text = "私有配置文件", Dock = DockStyle.Fill };
-        _configUrlTextBox = new TextBox
+        var intro = CreateBodyLabel(
+            "输入公开 config.json URL，以及 Codex 提供的单设备加密私有配置 URL；也可在第二栏选择本地 device.private.json。");
+        var publicLabel = new Label { Text = "公开 config.json URL", Dock = DockStyle.Fill };
+        _publicConfigUrlTextBox = new TextBox
         {
-            Text = ResolveInitialConfigSource(),
+            Text = ClientProvisioning.PublicBootstrapUrl,
             Dock = DockStyle.Fill
         };
-        _configUrlTextBox.TextChanged += (_, _) => UpdateNextButton();
-        var hint = CreateBodyLabel(@"示例：D:\secure\device.private.json");
+        var privateLabel = new Label { Text = "device.private.json URL 或本地路径", Dock = DockStyle.Fill };
+        _privateConfigSourceTextBox = new TextBox
+        {
+            Text = ResolveInitialPrivateConfigSource(),
+            Dock = DockStyle.Fill,
+            UseSystemPasswordChar = true
+        };
+        _showPrivateUrlCheckBox = new CheckBox
+        {
+            Text = "显示私有配置 URL",
+            Dock = DockStyle.Fill
+        };
+        _showPrivateUrlCheckBox.CheckedChanged += (_, _) =>
+        {
+            if (_privateConfigSourceTextBox is not null)
+                _privateConfigSourceTextBox.UseSystemPasswordChar = !_showPrivateUrlCheckBox.Checked;
+        };
+        var hint = CreateBodyLabel(
+            "远程私有 URL 必须是 FileShare temporary HTTPS 链接，并带 #crc-key=…；链接不会写入日志。");
 
         layout.Controls.Add(intro, 0, 0);
-        layout.Controls.Add(label, 0, 1);
-        layout.Controls.Add(_configUrlTextBox, 0, 2);
-        layout.Controls.Add(hint, 0, 3);
+        layout.Controls.Add(publicLabel, 0, 1);
+        layout.Controls.Add(_publicConfigUrlTextBox, 0, 2);
+        layout.Controls.Add(privateLabel, 0, 3);
+        layout.Controls.Add(_privateConfigSourceTextBox, 0, 4);
+        layout.Controls.Add(_showPrivateUrlCheckBox, 0, 5);
+        layout.Controls.Add(hint, 0, 6);
         panel.Controls.Add(layout);
         return panel;
     }
@@ -245,31 +284,59 @@ internal sealed class InstallerWizardForm : Form
     {
         try
         {
+            _installCts = new CancellationTokenSource();
             _nextButton.Enabled = false;
             _backButton.Enabled = false;
-            _cancelButton.Enabled = false;
+            _cancelButton.Enabled = true;
             SetProgress(10, "正在记录用户许可...");
             File.WriteAllText(AppPaths.PolicyAcceptedPath, $"acceptedAt={DateTimeOffset.Now:O}{Environment.NewLine}");
 
-            SetProgress(35, "正在验证本地私有配置...");
-            var configSource = _configUrlTextBox?.Text.Trim() ?? "";
-            var config = await InstallerBootstrapper.EnsureClientConfigAsync(configSource, _logger, CancellationToken.None);
+            SetProgress(25, "正在验证配置来源...");
+            var publicConfigSource = _publicConfigUrlTextBox?.Text.Trim()
+                ?? ClientProvisioning.PublicBootstrapUrl;
+            var privateConfigSource = _privateConfigSourceTextBox?.Text.Trim() ?? "";
+            var config = await InstallerBootstrapper.EnsureClientConfigAsync(
+                publicConfigSource, privateConfigSource, _logger, _installCts.Token);
+            _installCts.Token.ThrowIfCancellationRequested();
+            if (_privateConfigSourceTextBox is not null) _privateConfigSourceTextBox.Clear();
 
             SetProgress(70, "正在启动后台连接...");
             _runCts = new CancellationTokenSource();
             _runTask = Task.Run(() => ReverseClient.RunReconnectLoopAsync(config, _logger, _runCts.Token));
 
             SetProgress(100, "安装完成，正在等待服务端连接...");
-            await Task.Delay(500);
+            await Task.Delay(500, _installCts.Token);
+            _installCts.Token.ThrowIfCancellationRequested();
             ShowPage(4);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.Info("Installation cancelled.");
+            if (!_closing && !IsDisposed)
+            {
+                SetProgress(0, "安装已取消。");
+                _nextButton.Enabled = true;
+                _backButton.Enabled = true;
+                _cancelButton.Enabled = true;
+            }
         }
         catch (Exception ex)
         {
-            _logger.Error("Installation failed.", ex);
-            SetProgress(0, $"安装失败：{ex.Message}");
-            _nextButton.Enabled = true;
-            _backButton.Enabled = true;
-            _cancelButton.Enabled = true;
+            _logger.Error(ex is ProvisioningException provisioning
+                ? $"Installation failed. provisioningCode={provisioning.Code}"
+                : $"Installation failed. errorType={ex.GetType().Name}");
+            if (!_closing && !IsDisposed)
+            {
+                SetProgress(0, $"安装失败：{ex.Message}");
+                _nextButton.Enabled = true;
+                _backButton.Enabled = true;
+                _cancelButton.Enabled = true;
+            }
+        }
+        finally
+        {
+            _installCts?.Dispose();
+            _installCts = null;
         }
     }
 
@@ -288,9 +355,28 @@ internal sealed class InstallerWizardForm : Form
 
     private async Task CloseWithCleanupAsync()
     {
+        if (_closing) return;
+        _closing = true;
         Enabled = false;
-        await StopServiceAsync();
+        await StopAllAsync();
         Close();
+    }
+
+    private async Task StopAllAsync()
+    {
+        if (_installCts is not null && _installTask is not null)
+        {
+            _logger.Info("Installation cancellation requested.");
+            _installCts.Cancel();
+            try
+            {
+                await _installTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+        await StopServiceAsync();
     }
 
     private async Task StopServiceAsync()
@@ -337,7 +423,7 @@ internal sealed class InstallerWizardForm : Form
         };
     }
 
-    private static string ResolveInitialConfigSource()
+    private static string ResolveInitialPrivateConfigSource()
     {
         if (File.Exists(AppPaths.DefaultClientConfigPath)) return AppPaths.DefaultClientConfigPath;
         return AppPaths.ProvisioningClientConfigPath;
@@ -346,22 +432,39 @@ internal sealed class InstallerWizardForm : Form
 
 internal static class InstallerBootstrapper
 {
-    public static async Task<ClientConfig> EnsureClientConfigAsync(string configSource, FileLogger logger, CancellationToken cancellationToken)
+    public static async Task<ClientConfig> EnsureClientConfigAsync(
+        string publicConfigSource,
+        string privateConfigSource,
+        FileLogger logger,
+        CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(AppPaths.ClientDataDirectory);
 
-        if (string.IsNullOrWhiteSpace(configSource))
+        if (string.IsNullOrWhiteSpace(privateConfigSource))
         {
             if (File.Exists(AppPaths.DefaultClientConfigPath))
                 return ClientConfig.LoadOrCreate(AppPaths.DefaultClientConfigPath);
-            throw new InvalidDataException("请选择本地私有配置文件。");
+            throw new InvalidDataException("请输入私有配置 URL 或选择本地私有配置文件。");
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        var sourcePath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(configSource));
-        if (!File.Exists(sourcePath)) throw new FileNotFoundException("找不到私有配置文件。", sourcePath);
-
-        var provisioned = ClientConfig.LoadOrCreate(sourcePath);
+        ClientConfig provisioned;
+        if (Uri.TryCreate(privateConfigSource, UriKind.Absolute, out var privateUri) &&
+            privateUri.Scheme == Uri.UriSchemeHttps)
+        {
+            using var httpClient = ClientProvisioning.CreateHttpClient();
+            provisioned = await ClientProvisioning.DownloadAndDecryptAsync(
+                publicConfigSource, privateConfigSource, httpClient, cancellationToken);
+            logger.Info("Validated encrypted remote provisioning package.");
+        }
+        else
+        {
+            var sourcePath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(privateConfigSource));
+            if (!File.Exists(sourcePath)) throw new FileNotFoundException("找不到私有配置文件。", sourcePath);
+            provisioned = JsonConfig.Read<ClientConfig>(sourcePath);
+            provisioned.Validate();
+            logger.Info("Validated local administrator-supplied private configuration.");
+        }
         provisioned.Validate();
         var candidatePath = Path.Combine(AppPaths.ClientDataDirectory, $"config.{Guid.NewGuid():N}.tmp");
         try
@@ -374,8 +477,7 @@ internal static class InstallerBootstrapper
         {
             if (File.Exists(candidatePath)) File.Delete(candidatePath);
         }
-        logger.Info("Provisioned client configuration from a local administrator-supplied file.");
-        await Task.CompletedTask;
+        logger.Info("Installed private client configuration with restricted permissions.");
         return ClientConfig.LoadOrCreate(AppPaths.DefaultClientConfigPath);
     }
 }
