@@ -1,0 +1,55 @@
+name: CRC v2 CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  protocol-and-broker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  rmc:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: adapters/macos-rmc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: adapters/macos-rmc/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run check
+      - run: npm run build:client
+
+  rwc:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - if: runner.os == 'Linux'
+        run: dotnet test adapters/windows-rwc/tests/RWC-MLCCS.Tests/RWC-MLCCS.Tests.csproj -c Release
+      - if: runner.os == 'Linux'
+        run: dotnet build adapters/windows-rwc/src/RWC-MLCCS.Server/RWC-MLCCS.Server.csproj -c Release
+      - if: runner.os == 'Windows'
+        run: dotnet build adapters/windows-rwc/src/RWC-MLCCS.Client/RWC-MLCCS.Client.csproj -c Release

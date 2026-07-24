@@ -16,3 +16,7 @@
 **/config.json
 **/server.json
 **/policy.accepted
+
+# CRC v2 broker
+broker/config/private.json
+broker/state/

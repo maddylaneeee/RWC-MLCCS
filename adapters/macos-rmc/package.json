@@ -11,7 +11,8 @@
     "build:client": "bash scripts/build-client.sh",
     "build:server": "bash scripts/build-server.sh",
     "build": "bash scripts/build-all.sh",
-    "check": "node --check server/rmc-server.mjs"
+    "check": "node --check server/rmc-server.mjs && node --check server/protocol-v2.mjs",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "ws": "^8.18.3"

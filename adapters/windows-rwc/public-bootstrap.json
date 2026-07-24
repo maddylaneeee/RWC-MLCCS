@@ -1,0 +1,6 @@
+{
+  "protocolVersion": 2,
+  "brokerUrl": "wss://lixinchen.ca/crc/v2/ws",
+  "provisioning": "local-private-config-required",
+  "containsSecrets": false
+}

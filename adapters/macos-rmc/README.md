@@ -1,21 +1,44 @@
 # RMC-MLCCS
 
-RMC-MLCCS is the macOS adapter in the CRC remote-control toolset. It remains a native Mac client and Node CLI server, while CRC is the shared Codex skill and operating model that also covers the Windows RWC adapter. A macOS client app opens an outbound WebSocket connection to a CLI server. The server can then run shell commands, root commands, file-transfer helpers, or built-in tools on the connected Mac through the reverse channel.
+RMC-MLCCS is CRC's macOS adapter. Both the Swift device app and the Node operator connect **outbound only** to the CRC v2 broker over `wss://lixinchen.ca/crc/v2/ws` (HTTPS port 443). Neither side needs a public IP or an inbound firewall rule.
 
-## Design
+## Security model
 
-- Native SwiftUI macOS client with a permission/status UI.
-- Node CLI server with interactive commands and loopback operator endpoints.
-- HMAC challenge-response authentication using a pre-shared secret.
-- Private default configuration for `wss://lixinchen.ca:5002/link`.
-- Self-signed TLS generation with client-side certificate fingerprint pinning.
-- Sudo password is requested by the client UI and kept only in memory while the app is running.
-- macOS privacy permissions are detected and routed to System Settings; they are not silently granted.
+- The device and operator authenticate independently with timestamped HMAC-SHA256 challenge responses.
+- The broker authorizes `session.open`, assigns a session ID, and routes opaque `relay.data`; it cannot execute commands.
+- Command, output, and completion bodies use AES-256-GCM end-to-end encryption.
+- Per-session keys use HKDF-SHA256 with salt `sessionId` and info `crc-v2-e2ee|operatorId|deviceId`.
+- AAD covers session, endpoints, sequence, message ID, and timestamp.
+- Message IDs and strictly contiguous per-direction sequences prevent replay and reordering.
+- TLS always uses system trust validation. There is no invalid-certificate bypass.
+- The operator API binds to loopback and requires a random bearer token stored in a mode `0600` file.
+- Audit logs contain identifiers and outcomes, never command or output plaintext.
+- Connections use heartbeats and jittered exponential reconnect backoff.
 
-## Build
+The broker authentication keys are different for every principal. The device/operator pair shares only its E2EE key; do not register that key with the broker.
+
+## Configuration
+
+Copy `config/client.sample.json` and `config/server.sample.json`, or generate private local files:
+
+```bash
+bash scripts/generate-private-config.sh
+```
+
+Register the generated device and operator authentication keys/key IDs in the broker key registry. Keep `rmc.e2ee-key` only on the device and authorized operator hosts. All private files are ignored by Git.
+
+The normal client build does not embed private credentials. Provision
+`~/Library/Application Support/RMC-MLCCS/config.json` through a secure channel
+before launching the app. `CRC_EMBED_PRIVATE_CONFIG=1` exists only for tightly
+controlled one-off deployments because anyone who can copy that app bundle can
+extract its device credentials.
+
+## Build and test
 
 ```bash
 npm install
+npm run check
+npm test
 npm run build
 ```
 
@@ -24,64 +47,36 @@ Outputs:
 ```text
 artifacts/client/RMC-MLCCS.app
 artifacts/server/rmc-server.mjs
+artifacts/server/protocol-v2.mjs
 artifacts/server/server.private.json
 ```
 
-The build creates private server/client config if missing. To rotate the secret and pinned certificate, delete:
-
-```text
-config/client.private.json
-config/server.private.json
-config/rmc.shared-secret
-config/tls/
-```
-
-Then run `npm run build` again.
-
-## Run The Server
+## Run the operator
 
 ```bash
 node artifacts/server/rmc-server.mjs --config artifacts/server/server.private.json
 ```
 
-Interactive commands:
+Interactive commands remain:
 
 ```text
 help
 clients
-use <clientId>
+use <deviceId>
 run <shell command>
 root <shell command>
 tool <name> [args...]
 exit
 ```
 
-After selecting a client, a plain line is treated as `run <line>`. A line beginning with `sudo ` is sent as `root <line after sudo>`.
-
-## Built-In Client Tools
+The loopback HTTP API requires:
 
 ```text
-tool sysinfo
-tool permissions
-tool screenshot
-tool processes
-tool network
-tool apps
-tool brew
-tool deps
-tool rg <pattern> [path] [maxLines]
-tool python <code> [args...]
-tool python-file <path> [args...]
-tool download-url <url> [outputPath]
-tool fileshare-upload <path> [baseUrl]
-tool file-info <path>
-tool read-text <path> [maxBytes]
-tool clipboard
-tool password-popup [title] [message]
+Authorization: Bearer <contents of operator.token>
 ```
 
-`password-popup` displays a local hidden password prompt on the Mac and only reports whether input was received or cancelled; it does not return the password value to the server. Use `fileshare-upload` with the default `https://lixinchen.ca` base URL to move files from a client Mac back to FileShare, and `download-url` to pull files from FileShare or another HTTPS endpoint onto the client.
+Endpoints are `GET /health`, `GET /operator/clients`, and `POST /operator/execute`.
 
-## Security Notice
+## Built-in device tools
 
-RMC-MLCCS grants the connected server broad control over the client Mac, including root command execution after the local user validates sudo in the app. Only run it on Macs you own or are explicitly authorized to administer, and only connect it to a server you control.
+The existing `sysinfo`, `permissions`, `screenshot`, `processes`, `network`, `apps`, `brew`, `deps`, `rg`, `python`, `python-file`, `download-url`, `fileshare-upload`, `file-info`, `read-text`, `clipboard`, and `password-popup` tools remain available. macOS privacy approval and sudo validation still happen locally and are never bypassed.

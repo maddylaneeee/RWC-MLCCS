@@ -56,7 +56,7 @@ public sealed class CommandExecutor
         using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         _currentProcess = process;
 
-        _logger.Info($"Starting command. usedWinRm={useWinRm} timeout={timeoutSeconds}s command={command}");
+        _logger.Info($"Starting command. usedWinRm={useWinRm} timeout={timeoutSeconds}s");
         process.Start();
         await process.StandardInput.WriteLineAsync(script).ConfigureAwait(false);
         process.StandardInput.Close();

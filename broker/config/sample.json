@@ -1,0 +1,45 @@
+{
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 7590,
+    "path": "/ws"
+  },
+  "auth": {
+    "windowMs": 30000,
+    "attemptsPerMinute": 20,
+    "peers": [
+      {
+        "role": "operator",
+        "principalId": "primary-operator",
+        "keyId": "key-2026-01",
+        "authKey": "REPLACE_WITH_32_BYTE_BASE64URL_KEY",
+        "allowedDevices": ["mac-example", "windows-example"]
+      },
+      {
+        "role": "device",
+        "principalId": "mac-example",
+        "keyId": "key-2026-01",
+        "authKey": "REPLACE_WITH_A_DIFFERENT_32_BYTE_BASE64URL_KEY"
+      }
+    ]
+  },
+  "sessions": {
+    "ttlMs": 28800000
+  },
+  "limits": {
+    "maxMessageBytes": 1100000,
+    "maxCiphertextBytes": 1048576,
+    "maxConnections": 200,
+    "maxUnauthenticated": 50
+  },
+  "heartbeat": {
+    "intervalMs": 20000,
+    "timeoutMs": 60000
+  },
+  "audit": {
+    "path": "C:\\MLCCSapps\\CRC-MLCCS\\broker\\state\\audit.jsonl",
+    "hmacKey": "REPLACE_WITH_A_DEDICATED_32_BYTE_BASE64URL_KEY",
+    "maxBytes": 52428800,
+    "maxFiles": 10
+  }
+}

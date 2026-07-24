@@ -5,29 +5,35 @@ namespace RWC_MLCCS.Tests;
 public sealed class ConfigTests
 {
     [Fact]
-    public void ClientConfigCreatesDefaultFile()
+    public void ClientConfigCreatesBrokerV2DefaultsWithoutTlsBypass()
     {
-        var directory = Path.Combine(Path.GetTempPath(), "RWC_MLCCSTests", Guid.NewGuid().ToString("N"));
-        var path = Path.Combine(directory, "config.json");
-
+        var path = NewPath("config.json");
         var config = ClientConfig.LoadOrCreate(path);
 
         Assert.True(File.Exists(path));
-        Assert.Equal("wss://your-server.example:7580/link", config.ServerUrl);
-        Assert.False(config.AllowInvalidServerCertificate);
-        Assert.True(config.AllowLocalPowerShellFallback);
+        Assert.Equal("wss://lixinchen.ca/crc/v2/ws", config.BrokerUrl);
+        Assert.DoesNotContain("AllowInvalidServerCertificate", File.ReadAllText(path));
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Equal(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                File.GetUnixFileMode(path) & (UnixFileMode)0x1FF);
+        }
+        Assert.ThrowsAny<Exception>(config.Validate);
     }
 
     [Fact]
-    public void ServerConfigCreatesDefaultFile()
+    public void OperatorConfigCreatesRandomLoopbackBearerToken()
     {
-        var directory = Path.Combine(Path.GetTempPath(), "RWC_MLCCSTests", Guid.NewGuid().ToString("N"));
-        var path = Path.Combine(directory, "server.json");
+        var path = NewPath("server.json");
+        var first = ServerConfig.LoadOrCreate(path);
+        var second = ServerConfig.LoadOrCreate(path);
 
-        var config = ServerConfig.LoadOrCreate(path);
-
-        Assert.True(File.Exists(path));
-        Assert.Equal("0.0.0.0", config.ListenHost);
-        Assert.Equal(7580, config.Port);
+        Assert.True(Base64Url.Decode(first.LoopbackApi.BearerToken).Length >= 32);
+        Assert.Equal(first.LoopbackApi.BearerToken, second.LoopbackApi.BearerToken);
+        Assert.DoesNotContain("listenHost", File.ReadAllText(path), StringComparison.OrdinalIgnoreCase);
     }
+
+    private static string NewPath(string name) =>
+        Path.Combine(Path.GetTempPath(), "RWC_MLCCSTests", Guid.NewGuid().ToString("N"), name);
 }

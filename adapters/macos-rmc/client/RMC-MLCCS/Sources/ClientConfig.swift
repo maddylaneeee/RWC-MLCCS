@@ -1,11 +1,11 @@
 import Foundation
 
 struct ClientConfig: Codable {
-    var serverUrl: String
-    var sharedSecret: String
-    var clientId: String
-    var allowInvalidServerCertificate: Bool
-    var pinnedServerCertificateSha256: String
+    var brokerUrl: String
+    var deviceId: String
+    var keyId: String
+    var brokerAuthKey: String
+    var e2eeKey: String
     var reconnectDelaySeconds: Int
     var commandTimeoutSeconds: Int
     var requireSudoBeforeConnect: Bool
@@ -13,16 +13,24 @@ struct ClientConfig: Codable {
 
     static func load() -> ClientConfig {
         let supportURL = appSupportDirectory().appendingPathComponent("config.json")
-        if let bundledURL = Bundle.main.url(forResource: "config", withExtension: "json"),
-           let bundled = try? load(from: bundledURL) {
-            try? FileManager.default.createDirectory(at: appSupportDirectory(), withIntermediateDirectories: true)
-            try? Data(contentsOf: bundledURL).write(to: supportURL, options: .atomic)
-            return bundled.normalized()
-        }
-
         if FileManager.default.fileExists(atPath: supportURL.path),
            let loaded = try? load(from: supportURL) {
             return loaded.normalized()
+        }
+
+        if let bundledURL = Bundle.main.url(forResource: "config", withExtension: "json"),
+           let bundled = try? load(from: bundledURL) {
+            try? FileManager.default.createDirectory(at: appSupportDirectory(), withIntermediateDirectories: true)
+            do {
+                try Data(contentsOf: bundledURL).write(to: supportURL, options: .atomic)
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600],
+                    ofItemAtPath: supportURL.path
+                )
+            } catch {
+                // Continue with the in-memory bundled config; no private file was provisioned.
+            }
+            return bundled.normalized()
         }
 
         return fallback().normalized()
@@ -40,9 +48,9 @@ struct ClientConfig: Codable {
 
     func normalized() -> ClientConfig {
         var copy = self
-        if copy.clientId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if copy.deviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let host = Host.current().localizedName ?? "mac"
-            copy.clientId = "\(host)-\(NSUserName())"
+            copy.deviceId = "\(host)-\(NSUserName())"
                 .replacingOccurrences(of: " ", with: "-")
                 .replacingOccurrences(of: "/", with: "-")
         }
@@ -57,11 +65,11 @@ struct ClientConfig: Codable {
 
     private static func fallback() -> ClientConfig {
         ClientConfig(
-            serverUrl: "wss://lixinchen.ca:5002/link",
-            sharedSecret: "change-this-shared-secret",
-            clientId: "",
-            allowInvalidServerCertificate: false,
-            pinnedServerCertificateSha256: "",
+            brokerUrl: "wss://lixinchen.ca/crc/v2/ws",
+            deviceId: "",
+            keyId: "replace-with-key-id",
+            brokerAuthKey: "replace-with-base64url-key",
+            e2eeKey: "replace-with-base64url-key",
             reconnectDelaySeconds: 5,
             commandTimeoutSeconds: 600,
             requireSudoBeforeConnect: true,

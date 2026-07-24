@@ -1,0 +1,19 @@
+{
+  "sharedSecret": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "sessionId": "session-vector-001",
+  "operatorId": "operator-alpha",
+  "deviceId": "device-mac-001",
+  "nonce": "ICEiIyQlJicoKSor",
+  "plaintext": "CRC v2 interop ✅",
+  "from": "operator:operator-alpha",
+  "to": "device:device-mac-001",
+  "seq": "1",
+  "messageId": "vector-message-0001",
+  "ts": 1784764800000,
+  "key": "mhcv9dBfh7aY68wBUDn30sgLa7H6yrHosbXg1NLfOGQ",
+  "encrypted": {
+    "nonce": "ICEiIyQlJicoKSor",
+    "ciphertext": "DhiQCXhwcuJ8JP_6LIrm3_MQ",
+    "tag": "sA5FDPZwZqRTmTXNYaT2Jg"
+  }
+}

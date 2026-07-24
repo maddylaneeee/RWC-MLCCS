@@ -2,5 +2,8 @@ node_modules/
 artifacts/
 config/*.private.json
 config/*.shared-secret
+config/rmc.*-key
 config/tls/
+operator.token
+logs/
 .DS_Store

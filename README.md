@@ -14,6 +14,15 @@ CRC-MLCCS is a cross-platform reverse-control toolkit for authorized administrat
 
 The RMC and RWC names remain as adapter identifiers and artifact names. CRC is the project name and shared operating model.
 
+## CRC v2 relay
+
+[`broker`](broker) is the MLCCS-hosted authenticated broker for operation across
+NAT and arbitrary public networks. Devices and operators make outbound WSS
+connections to `wss://lixinchen.ca/crc/v2/ws`; MLCCS routes short authorized
+sessions by device ID without executing commands or holding E2EE keys. The shared
+wire format and AES-256-GCM/HKDF implementation are in
+[`protocol/v2`](protocol/v2).
+
 ## Security
 
 CRC provides broad remote command execution and diagnostic capabilities. Use it only on systems you own or are explicitly authorized to administer. Replace every sample secret and development certificate before real use. Private configuration, generated keys, certificates, build output, and runtime state are intentionally excluded from this repository.
