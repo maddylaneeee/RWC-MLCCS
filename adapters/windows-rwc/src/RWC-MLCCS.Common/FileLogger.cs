@@ -1,13 +1,17 @@
+using System.Diagnostics;
+
 namespace RWC_MLCCS.Common;
 
 public sealed class FileLogger
 {
     private readonly object _gate = new();
+    private readonly string _directory;
     private readonly string _path;
 
-    public FileLogger(string name)
+    public FileLogger(string name, string? logDirectory = null)
     {
-        _path = Path.Combine(AppPaths.LogDirectory, $"{name}-{DateTimeOffset.Now:yyyyMMdd}.log");
+        _directory = logDirectory ?? AppPaths.LogDirectory;
+        _path = Path.Combine(_directory, $"{name}-{DateTimeOffset.Now:yyyyMMdd}.log");
     }
 
     public void Info(string message) => Write("INFO", message);
@@ -22,7 +26,21 @@ public sealed class FileLogger
         var line = $"{DateTimeOffset.Now:O} [{level}] {message}{Environment.NewLine}";
         lock (_gate)
         {
-            File.AppendAllText(_path, line);
+            try
+            {
+                Directory.CreateDirectory(_directory);
+                File.AppendAllText(_path, line);
+            }
+            catch (Exception ex) when (
+                ex is IOException or
+                UnauthorizedAccessException or
+                NotSupportedException or
+                System.Security.SecurityException)
+            {
+                // Logging is diagnostic. A deleted/unwritable artifact log
+                // directory must not terminate the broker control path.
+                Trace.WriteLine($"RWC FileLogger write failed: {ex.GetType().Name}");
+            }
         }
     }
 }

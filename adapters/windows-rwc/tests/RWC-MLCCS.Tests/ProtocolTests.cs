@@ -58,4 +58,13 @@ public sealed class ProtocolTests
         var script = PowerShellScripts.WrapForLocalWinRm("hostname");
         Assert.Contains("Invoke-Command -ComputerName localhost", script);
     }
+
+    [Fact]
+    public void EncodedCommandRoundTripsAsPowerShellUtf16Le()
+    {
+        const string script = "Write-Output '中文 CRC output'";
+        var encoded = PowerShellScripts.EncodeCommand(script);
+
+        Assert.Equal(script, System.Text.Encoding.Unicode.GetString(Convert.FromBase64String(encoded)));
+    }
 }

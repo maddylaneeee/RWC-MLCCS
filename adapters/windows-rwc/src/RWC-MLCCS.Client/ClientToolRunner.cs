@@ -244,7 +244,7 @@ internal static class ClientToolRunner
                   '&chunk_index=' + $index +
                   '&total_chunks=' + $totalChunks
                 Invoke-RestMethod -Uri ($base + 'api/upload/chunk?' + $query) -Method Post -ContentType 'application/octet-stream' -Body $chunk | Out-Null
-                Write-Error "$name: chunk $($index + 1)/$totalChunks"
+                Write-Error "${name}: chunk $($index + 1)/$totalChunks"
               }
             } finally {
               $stream.Dispose()
